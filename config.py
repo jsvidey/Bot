@@ -1,0 +1,77 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+def env_int(name, default=0):
+    try: return int(str(os.getenv(name, default)).strip())
+    except Exception: return default
+
+def env_bool(name, default=False):
+    return str(os.getenv(name, str(default))).strip().lower() in {"1","true","yes","on"}
+
+BOT_TOKEN=os.getenv("BOT_TOKEN","").strip()
+BOT_USERNAME=os.getenv("BOT_USERNAME","Jsshowbot").lstrip("@").strip()
+# Optional Local Bot API Server. Required for Telegram-origin files above ~20 MB.
+# Example: http://telegram-bot-api:8081 or http://127.0.0.1:8081
+TELEGRAM_API_BASE=os.getenv("TELEGRAM_API_BASE","").strip().rstrip("/")
+MAX_MEDIA_SIZE_MB=max(env_int("MAX_MEDIA_SIZE_MB",100),1)
+MAX_MEDIA_SIZE_BYTES=MAX_MEDIA_SIZE_MB*1024*1024
+DATABASE_URL=os.getenv("DATABASE_URL","").strip()
+PUBLIC_BASE_URL=os.getenv("PUBLIC_BASE_URL","").strip().rstrip("/")
+OWNER_ID=env_int("OWNER_ID")
+def _env_ids(*names):
+    out=set()
+    for name in names:
+        for x in os.getenv(name, "").replace(";", ",").split(","):
+            x=x.strip()
+            if x.lstrip("-").isdigit(): out.add(int(x))
+    return {x for x in out if x != 0}
+
+ADMIN_IDS=_env_ids("ADMIN_IDS","ADMINS","OWNER_IDS","OWNER_ID")
+NOTIF_CHANNEL_ID=env_int("NOTIF_CHANNEL_ID")
+# Mandatory subscription channels. If IDs are empty, that channel is skipped.
+FORCE_CHANNEL_ID=env_int("FORCE_CHANNEL_ID", env_int("FORCE_CHANNEL", 0))
+NOTICE_SUB_CHANNEL_ID=env_int("NOTICE_SUB_CHANNEL_ID", env_int("NOTICE_CHANNEL_ID", 0))
+FORCE_CHANNEL_URL=os.getenv("FORCE_CHANNEL_URL","https://t.me/noticsaluran").strip()
+NOTICE_SUB_CHANNEL_URL=os.getenv("NOTICE_SUB_CHANNEL_URL","https://t.me/channeljsshow").strip()
+FORCE_CHANNEL_USERNAME=os.getenv("FORCE_CHANNEL_USERNAME","noticsaluran").strip().lstrip("@")
+NOTICE_SUB_CHANNEL_USERNAME=os.getenv("NOTICE_SUB_CHANNEL_USERNAME","channeljsshow").strip().lstrip("@")
+CODE_GROUP_ID=env_int("CODE_GROUP_ID")
+CODE_GROUP_URL="https://t.me/+WeFUnjG8ojQzOWQ5"
+CODE_GROUP_TITLE=os.getenv("CODE_GROUP_TITLE","Group Chat Code").strip() or "Group Chat Code"
+NOTICE_CHANNEL_URL="https://t.me/noticsaluran"
+ALL_CODE_CHANNEL_URL="https://t.me/+NrHk5eHAiTFiNzc1"
+BACKUP_CHANNEL_URL="https://t.me/+g3t3JY6ft8xhYTE1"
+
+TRANSACTION_CHANNEL_URL=os.getenv("TRANSACTION_CHANNEL_URL","https://t.me/+8NajMZzycUE2NGE1").strip()
+# Telegram Bot API needs a chat/channel ID (or public @username) to actually post.
+# The private invite URL above is kept for user-facing links; configure this ID in Railway.
+TRANSACTION_CHAT_ID=os.getenv("TRANSACTION_CHAT_ID","").strip()
+ERROR_NOTICE_CHAT_ID=os.getenv("ERROR_NOTICE_CHAT_ID","@noticsaluran").strip()
+TIMEZONE="Asia/Jakarta"
+
+# Payments
+BAYARGG_API_KEY=os.getenv("BAYARGG_API_KEY","").strip()
+BAYARGG_SECRET=os.getenv("BAYARGG_SECRET","").strip()
+BAYARGG_WEBHOOK_SECRET=os.getenv("BAYARGG_WEBHOOK_SECRET","").strip()
+BAYARGG_BASE_URL=os.getenv("BAYARGG_BASE_URL","https://www.bayar.gg/api").strip().rstrip("/")
+BAYARGG_WEBHOOK_URL=f"{PUBLIC_BASE_URL}/bayargg/webhook" if PUBLIC_BASE_URL else ""
+CASHI_API_KEY=os.getenv("CASHI_API_KEY","").strip()
+CASHI_SECRET_KEY=os.getenv("CASHI_SECRET_KEY","").strip()
+CASHI_BASE_URL=os.getenv("CASHI_BASE_URL","https://cashi.id").strip().rstrip("/")
+CASHI_PAYMENT_CHANNEL=os.getenv("CASHI_PAYMENT_CHANNEL","QRIS_CUSTOM").strip()
+CASHI_MIN_AMOUNT=env_int("CASHI_MIN_AMOUNT",2000)
+CASHI_MAX_AMOUNT=env_int("CASHI_MAX_AMOUNT",10000000)
+
+# Storage: Backblaze B2, up to 10 S3-compatible storage accounts.
+# Account 1 uses the short B2_* variables; accounts 2-10 may use B2_2_* ... B2_10_*.
+B2_COUNT=min(max(env_int("B2_COUNT",1),1),10)
+
+# Bot rules
+MAX_MEDIA=env_int("MAX_MEDIA",200)
+PLATFORM_FEE_PERCENT=80.0
+PAID_CODE_MIN_IDR=2000
+PAID_CODE_MAX_IDR=2000000
+VIP_CODE_DELAY_MINUTES=30
+MEDIA_SEND_DELAY_MS=2000
+
