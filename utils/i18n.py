@@ -1,0 +1,715 @@
+from __future__ import annotations
+import re
+from database import get_pool
+
+SUPPORTED = {"id": "🇮🇩 Indonesia", "en": "🇬🇧 English"}
+
+async def get_lang(user_id: int) -> str:
+    try:
+        v = await (await get_pool()).fetchval("SELECT COALESCE(language,'') FROM users WHERE user_id=$1", user_id)
+        return v if v in SUPPORTED else ""
+    except Exception:
+        return ""
+
+async def set_lang(user_id: int, lang: str):
+    if lang not in SUPPORTED:
+        lang = "id"
+    await (await get_pool()).execute("UPDATE users SET language=$1 WHERE user_id=$2", lang, user_id)
+
+LANG_KB = {
+    "id": "Pilih Bahasa",
+    "en": "Choose Language",
+    "zh": "选择语言",
+}
+
+# Exact/phrase translations used by the bot UI. User supplied titles, tags, codes,
+# usernames and numbers are deliberately not translated.
+DICT = {
+"en": {
+"MENU LAINNYA":"MORE MENU","Dashboard":"Dashboard","ID":"ID","Status":"Status","Saldo":"Balance",
+"FREE":"FREE","VIP":"VIP","CREATOR":"CREATOR","Belum paham cara menggunakan bot? Klik":"Need help using the bot? Tap",
+"Help":"Help","Up File":"Upload File","Get File":"Get File","Code":"Code","Top 10 Code":"Top 10 Codes","Buy VIP":"Buy VIP","Deposit":"Deposit","Menu Lainnya":"More Menu",
+"My Code":"My Code","Group Code":"Group Code","Jadi Kreator":"Become Creator","Creator":"Creator","Withdraw":"Withdraw","Kembali":"Back","🔙 Kembali":"🔙 Back",
+"📥 Kirim CODE yang ingin dibuka.":"📥 Send the CODE you want to open.",
+"❌ Code tidak valid.":"❌ Invalid code.","❌ Code tidak ditemukan.":"❌ Code not found.",
+"📥 Buka Code":"📥 Open Code","📂 Buka Code (Gratis)":"📂 Open Code (Free)","CODE MILIK SENDIRI":"YOUR OWN CODE",
+
+"OPEN CODE":"OPEN CODE","Pilih cara membuka:":"Choose how to open:","Pilih pembayaran:":"Choose payment:",
+"🆓 FREE CODE":"🆓 FREE CODE","💰 Harga:":"💰 Price:","Media":"Media","Views":"Views",
+"Buka Gratis (VIP)":"Open Free (VIP)","Buka dengan":"Open with","Saldo":"Balance",
+"Like":"Like","Hate":"Hate","Favorit":"Favorite","Batal":"Cancel","Lanjut kirim":"Continue sending",
+"Semua media selesai dikirim.":"All media have been sent.","MEDIA TIDAK TERSEDIA":"MEDIA NOT AVAILABLE",
+"Media gagal dikirim:":"Media failed to send:","Media ke":"Media","Semua media selesai":"All media sent",
+"Done Create":"Done Create","Judul":"Title","Tag":"Tag","Type":"Type","total":"total",
+"FREE CODE":"FREE CODE","Bagikan code ini ke teman-teman untuk membuka media ini.":"Share this code with friends to open the media.",
+"BUY VIP":"BUY VIP","Pilih paket:":"Choose a package:","Paket tidak tersedia.":"Package unavailable.",
+"Pembayaran ditutup atau gagal.":"Payment is closed or failed.","Setelah membayar, tekan Cek Pembayaran.":"After paying, tap Check Payment.",
+"Cek Pembayaran":"Check Payment","Hanya Creator.":"Creator only.","Withdraw sedang ditutup.":"Withdraw is currently closed.",
+"❌ Nominal tidak valid.":"❌ Invalid amount.","❌ Nominal tidak valid":"❌ Invalid amount",
+"Saldo tidak cukup.":"Balance is insufficient.","❌ Saldo tidak cukup.":"❌ Insufficient balance.",
+"Pengajuan WD berhasil. Menunggu admin.":"✅ Withdrawal request submitted. Waiting for admin.",
+"📤 Up File":"📤 Upload File","📥 Get File":"📥 Get File","📂 Menu Lainnya":"📂 More Menu",
+"Bahasa":"Language","Ganti Bahasa":"Change Language","Pilih bahasa:":"Choose your language:",
+},
+"zh": {
+"MENU LAINNYA":"更多菜单","Dashboard":"控制面板","ID":"ID","Status":"状态","Saldo":"余额",
+"FREE":"免费","VIP":"VIP","CREATOR":"创作者","Belum paham cara menggunakan bot? Klik":"不了解如何使用？点击",
+"Help":"帮助","Up File":"上传文件","Get File":"获取文件","Code":"代码","Top 10 Code":"代码排行榜","Buy VIP":"购买 VIP","Deposit":"充值","Menu Lainnya":"更多菜单",
+"My Code":"我的代码","Group Code":"群组代码","Jadi Kreator":"成为创作者","Creator":"创作者","Withdraw":"提现","Kembali":"返回","🔙 Kembali":"🔙 返回",
+"📥 Kirim CODE yang ingin dibuka.":"📥 发送要打开的 CODE。",
+"❌ Code tidak valid.":"❌ CODE 无效。","❌ Code tidak ditemukan.":"❌ 未找到 CODE。",
+"📥 Buka Code":"📥 打开 CODE","📂 Buka Code (Gratis)":"📂 免费打开 CODE","CODE MILIK SENDIRI":"自己的 CODE",
+
+"OPEN CODE":"打开 CODE","Pilih cara membuka:":"选择打开方式：","Pilih pembayaran:":"选择支付方式：",
+"🆓 FREE CODE":"🆓 免费 CODE","💰 Harga:":"💰 价格：","Media":"媒体","Views":"浏览",
+"Buka Gratis (VIP)":"VIP 免费打开","Buka dengan":"使用","Saldo":"余额",
+"Like":"点赞","Hate":"踩","Favorit":"收藏","Batal":"取消","Lanjut kirim":"继续发送",
+"Semua media selesai dikirim.":"所有媒体发送完成。","MEDIA TIDAK TERSEDIA":"媒体不可用",
+"Media gagal dikirim:":"媒体发送失败：","Media ke":"媒体","Semua media selesai":"所有媒体发送完成",
+"Done Create":"创建完成","Judul":"标题","Tag":"标签","Type":"类型","total":"总计",
+"FREE CODE":"免费 CODE","Bagikan code ini ke teman-teman untuk membuka media ini.":"分享此 CODE 给朋友即可打开媒体。",
+"BUY VIP":"购买 VIP","Pilih paket:":"选择套餐：","Paket tidak tersedia.":"套餐不可用。",
+"Pembayaran ditutup atau gagal.":"支付已关闭或失败。","Setelah membayar, tekan Cek Pembayaran.":"付款后点击检查支付。",
+"Cek Pembayaran":"检查支付","Hanya Creator.":"仅限创作者。","Withdraw sedang ditutup.":"提现目前已关闭。",
+"❌ Nominal tidak valid.":"❌ 金额无效。","Saldo tidak cukup.":"余额不足。","❌ Saldo tidak cukup.":"❌ 余额不足。",
+"Pengajuan WD berhasil. Menunggu admin.":"✅ 提现申请成功，等待管理员处理。",
+"📤 Up File":"📤 上传文件","📥 Get File":"📥 获取文件","📂 Menu Lainnya":"📂 更多菜单",
+"Bahasa":"语言","Ganti Bahasa":"切换语言","Pilih bahasa:":"选择语言：",
+}
+}
+
+# Broad UI word/phrase fallback. This is intentionally limited to common bot UI
+# vocabulary; it avoids translating arbitrary user-generated identifiers.
+WORD_DICT = {
+"en": {
+ "Kirim":"Send","Masukkan":"Enter","Masukkan username":"Enter username","Masukkan nominal":"Enter amount","Tidak ada":"No","ada":"available","gagal":"failed","berhasil":"successful","sukses":"success","Proses":"Process","proses":"process","Sedang":"Currently","tunggu":"wait","Tunggu":"Please wait","pilih":"choose","Pilih":"Choose","untuk":"for","dengan":"with","tanpa":"without","milik":"owned by","sendiri":"own","dibuka":"opened","buka":"open","membuka":"opening","tersedia":"available","tidak":"not","ditemukan":"found","aktif":"active","nonaktif":"inactive","Harga":"Price","harga":"price","Jumlah":"Amount","jumlah":"amount","Total":"Total","total":"total","media":"media","Code":"Code","code":"code","User":"User","user":"user","Admin":"Admin","Creator":"Creator","Kreator":"Creator","Saldo":"Balance","VIP":"VIP","Gratis":"Free","FREE":"FREE","Bayar":"Pay","Pembayaran":"Payment","Pembayaran":"Payment","beli":"buy","Beli":"Buy","Belum":"Not yet","sudah":"already","Hari":"Days","hari":"days","Jam":"Hours","jam":"hours","menit":"minutes","detik":"seconds","waktu":"time","akses":"access","Akses":"Access","batas":"limit","Batas":"Limit","perpanjangan":"extension","Perpanjangan":"Extension","akun":"account","Akun":"Account","bahasa":"language","Bahasa":"Language","kembali":"back","Kembali":"Back","Lanjut":"Continue","Batal":"Cancel","Selesai":"Done","Simpan":"Save","Hapus":"Delete","Edit":"Edit","Tambah":"Add","Pilih":"Choose","Daftar":"Register","Masuk":"Login","Keluar":"Logout","notifikasi":"notification","Notifikasi":"Notification","alasan":"reason","Alasan":"Reason","nama":"name","Nama":"Name","judul":"title","Judul":"Title","tag":"tag","Tag":"Tag","role":"role","Role":"Role","status":"status","Status":"Status","saldo":"balance","withdraw":"withdrawal","Withdraw":"Withdrawal","manual":"manual","otomatis":"automatically","Otomatis":"Automatically","kirim":"send","terima":"receive","diterima":"received","sisa":"remaining","satu":"one","semua":"all","media":"media","Views":"Views","Like":"Like","Hate":"Hate","Favorit":"Favorite","Favorit":"Favorite","Error":"Error","Kesalahan":"Error","berikut":"following","silakan":"please","Silakan":"Please","contoh":"example","Contoh":"Example","catatan":"note","Catatan":"Note"
+},
+"zh": {
+ "Kirim":"发送","Masukkan":"输入","Masukkan username":"输入用户名","Masukkan nominal":"输入金额","Tidak ada":"没有","ada":"有","gagal":"失败","berhasil":"成功","sukses":"成功","Proses":"处理","proses":"处理","Sedang":"正在","tunggu":"等待","Tunggu":"请稍候","pilih":"选择","Pilih":"选择","untuk":"用于","dengan":"使用","tanpa":"无需","milik":"属于","sendiri":"自己","dibuka":"已打开","buka":"打开","membuka":"打开","tersedia":"可用","tidak":"不","ditemukan":"找到","aktif":"启用","nonaktif":"停用","Harga":"价格","harga":"价格","Jumlah":"数量","jumlah":"数量","Total":"总计","total":"总计","media":"媒体","Code":"代码","code":"代码","User":"用户","user":"用户","Admin":"管理员","Creator":"创作者","Kreator":"创作者","Saldo":"余额","VIP":"VIP","Gratis":"免费","FREE":"免费","Bayar":"支付","Pembayaran":"支付","beli":"购买","Beli":"购买","Belum":"尚未","sudah":"已经","Hari":"天","hari":"天","Jam":"小时","jam":"小时","menit":"分钟","detik":"秒","waktu":"时间","akses":"访问","Akses":"访问","batas":"限制","Batas":"限制","perpanjangan":"续期","Perpanjangan":"续期","akun":"账户","Akun":"账户","bahasa":"语言","Bahasa":"语言","kembali":"返回","Kembali":"返回","Lanjut":"继续","Batal":"取消","Selesai":"完成","Simpan":"保存","Hapus":"删除","Edit":"编辑","Tambah":"添加","Daftar":"注册","Masuk":"登录","Keluar":"退出","notifikasi":"通知","Notifikasi":"通知","alasan":"原因","Alasan":"原因","nama":"名称","Nama":"名称","judul":"标题","Judul":"标题","tag":"标签","Tag":"标签","role":"角色","Role":"角色","status":"状态","Status":"状态","saldo":"余额","withdraw":"提现","Withdraw":"提现","manual":"手动","otomatis":"自动","Otomatis":"自动","kirim":"发送","terima":"接收","diterima":"已收到","sisa":"剩余","semua":"全部","Views":"浏览","Like":"点赞","Hate":"踩","Favorit":"收藏","Error":"错误","Kesalahan":"错误","berikut":"如下","silakan":"请","Silakan":"请","contoh":"示例","Contoh":"示例","catatan":"备注","Catatan":"备注"
+}
+}
+
+
+# Expanded UI translations. These cover messages that are emitted directly by
+# handlers instead of using a small predefined phrase list.
+EXTRA_DICT = {
+"en": {
+"Kamu":"You","Anda":"You","kamu":"you","anda":"you","tidak memiliki":"do not have","memiliki":"have","akses":"access","Tidak ada akses":"No access","Tidak ada":"None","ada":"available","harus":"must","wajib":"required","dapat":"can","bisa":"can","sedang":"currently","ditutup":"closed","ditutup oleh admin":"closed by the admin","dibuka":"opened","belum":"not yet","Belum":"Not yet","sudah":"already","Sudah":"Already","oleh":"by","untuk":"for","dengan":"with","tanpa":"without","yang":"that","dan":"and","atau":"or","jika":"if","kalau":"if","lalu":"then","sekarang":"now","ini":"this","itu":"that","dari":"from","ke":"to","pada":"on","dalam":"in","setelah":"after","sebelum":"before","sampai":"until","lebih":"more","kurang":"less","maksimal":"maximum","minimal":"minimum","hanya":"only","Hanya":"Only","semua":"all","Semua":"All","lain":"other","lainnya":"other","Menu":"Menu","menu":"menu","Pilih":"Choose","pilih":"choose","Masukkan":"Enter","masukkan":"enter","Kirim":"Send","kirim":"send","Kirimkan":"Send","Tunggu":"Please wait","tunggu":"wait","Proses":"Process","proses":"process","Berhasil":"Successful","berhasil":"successful","Gagal":"Failed","gagal":"failed","Kesalahan":"Error","kesalahan":"error","Tidak valid":"Invalid","tidak valid":"invalid","Tidak ditemukan":"Not found","tidak ditemukan":"not found","tersedia":"available","tidak tersedia":"unavailable","Nama":"Name","nama":"name","User":"User","user":"user","Pengguna":"User","pengguna":"user","ID pengguna":"User ID","nomor":"number","Nomor":"Number","rekening":"account number","metode":"method","Metode":"Method","bukti":"proof","Bukti":"Proof","screenshot":"screenshot","Screenshot":"Screenshot","gambar":"image","Gambar":"Image","foto":"photo","Foto":"Photo","angka":"number","Angka":"Number","nominal":"amount","Nominal":"Amount","alasan":"reason","Alasan":"Reason","status":"status","Status":"Status","aktif":"active","Aktif":"Active","nonaktif":"inactive","Nonaktif":"Inactive","disimpan":"saved","tersimpan":"saved","dihapus":"deleted","diperbarui":"updated","ditambahkan":"added","berjalan":"running","berakhir":"ends","habis":"expired","akses code":"code access","Code tidak ditemukan":"Code not found","code tidak ditemukan":"code not found","Code tidak valid":"Invalid code","code tidak valid":"invalid code","Pembayaran":"Payment","pembayaran":"payment","Pembayaran berhasil":"Payment successful","pembayaran berhasil":"payment successful","Pembayaran tidak ditemukan":"Payment not found","pembayaran tidak ditemukan":"payment not found","dibatalkan":"cancelled","disetujui":"approved","ditolak":"rejected","menunggu":"waiting","Menunggu":"Waiting","persetujuan":"approval","Admin":"Admin","admin":"admin","Creator":"Creator","creator":"creator","Kreator":"Creator","kreator":"creator","VIP":"VIP","Saldo":"Balance","saldo":"balance","Harga":"Price","harga":"price","Jumlah":"Amount","jumlah":"amount","Total":"Total","total":"total","Hari":"Days","hari":"days","Jam":"Hours","jam":"hours","menit":"minutes","detik":"seconds","waktu":"time","Durasi":"Duration","durasi":"duration","Media":"Media","media":"media","file":"file","File":"File","Code":"Code","code":"code","judul":"title","Judul":"Title","tag":"tag","Tag":"Tag","Selesai":"Done","selesai":"done","Batal":"Cancel","batal":"cancel","Kembali":"Back","kembali":"back","Lanjut":"Continue","lanjut":"continue","Simpan":"Save","simpan":"save","Hapus":"Delete","hapus":"delete","Edit":"Edit","edit":"edit","Tambah":"Add","tambah":"add","Buka":"Open","buka":"open","Membuka":"Opening","membuka":"opening","dibuka":"opened","Gratis":"Free","gratis":"free","Bayar":"Pay","bayar":"pay","Beli":"Buy","beli":"buy","Deposit":"Deposit","deposit":"deposit","Withdraw":"Withdrawal","withdraw":"withdrawal","Pengajuan":"Request","pengajuan":"request","Pendaftaran":"Registration","pendaftaran":"registration","Konfirmasi":"Confirmation","konfirmasi":"confirmation","notifikasi":"notification","Notifikasi":"Notification","pesan":"message","Pesan":"Message","link":"link","tautan":"link","channel":"channel","grup":"group","Grup":"Group","Group":"Group","back up":"backup","utama":"primary","tersedia":"available","ganti":"change","Ganti":"Change","Bahasa":"Language","bahasa":"language"},
+"zh": {
+"Kamu":"你","Anda":"您","kamu":"你","anda":"您","tidak memiliki":"没有","memiliki":"拥有","akses":"访问权限","Tidak ada akses":"没有访问权限","Tidak ada":"没有","ada":"有","harus":"必须","wajib":"必须","dapat":"可以","bisa":"可以","sedang":"正在","ditutup":"已关闭","ditutup oleh admin":"已由管理员关闭","dibuka":"已打开","belum":"尚未","Belum":"尚未","sudah":"已经","Sudah":"已经","oleh":"由","untuk":"用于","dengan":"使用","tanpa":"无需","yang":"的","dan":"和","atau":"或","jika":"如果","kalau":"如果","lalu":"然后","sekarang":"现在","ini":"此","itu":"该","dari":"从","ke":"到","pada":"在","dalam":"中","setelah":"之后","sebelum":"之前","sampai":"直到","lebih":"更多","kurang":"更少","maksimal":"最多","minimal":"至少","hanya":"仅","Hanya":"仅","semua":"全部","Semua":"全部","lain":"其他","lainnya":"其他","Menu":"菜单","menu":"菜单","Pilih":"选择","pilih":"选择","Masukkan":"输入","masukkan":"输入","Kirim":"发送","kirim":"发送","Kirimkan":"发送","Tunggu":"请稍候","tunggu":"等待","Proses":"处理","proses":"处理","Berhasil":"成功","berhasil":"成功","Gagal":"失败","gagal":"失败","Kesalahan":"错误","kesalahan":"错误","Tidak valid":"无效","tidak valid":"无效","Tidak ditemukan":"未找到","tidak ditemukan":"未找到","tersedia":"可用","tidak tersedia":"不可用","Nama":"名称","nama":"名称","User":"用户","user":"用户","Pengguna":"用户","pengguna":"用户","ID pengguna":"用户 ID","nomor":"号码","Nomor":"号码","rekening":"账户","Metode":"方式","metode":"方式","bukti":"凭证","Bukti":"凭证","screenshot":"截图","Screenshot":"截图","gambar":"图片","Gambar":"图片","foto":"照片","Foto":"照片","angka":"数字","Angka":"数字","nominal":"金额","Nominal":"金额","alasan":"原因","Alasan":"原因","status":"状态","Status":"状态","aktif":"启用","Aktif":"启用","nonaktif":"停用","Nonaktif":"停用","disimpan":"已保存","tersimpan":"已保存","dihapus":"已删除","diperbarui":"已更新","ditambahkan":"已添加","berjalan":"运行中","berakhir":"结束","habis":"已过期","akses code":"代码访问","Code tidak ditemukan":"未找到 CODE","code tidak ditemukan":"未找到 CODE","Code tidak valid":"CODE 无效","code tidak valid":"CODE 无效","Pembayaran":"支付","pembayaran":"支付","Pembayaran berhasil":"支付成功","pembayaran berhasil":"支付成功","Pembayaran tidak ditemukan":"未找到支付记录","pembayaran tidak ditemukan":"未找到支付记录","dibatalkan":"已取消","disetujui":"已批准","ditolak":"已拒绝","menunggu":"等待","Menunggu":"等待","persetujuan":"批准","Admin":"管理员","admin":"管理员","Creator":"创作者","creator":"创作者","Kreator":"创作者","kreator":"创作者","VIP":"VIP","Saldo":"余额","saldo":"余额","Harga":"价格","harga":"价格","Jumlah":"数量","jumlah":"数量","Total":"总计","total":"总计","Hari":"天","hari":"天","Jam":"小时","jam":"小时","menit":"分钟","detik":"秒","waktu":"时间","Durasi":"时长","durasi":"时长","Media":"媒体","media":"媒体","file":"文件","File":"文件","Code":"代码","code":"代码","judul":"标题","Judul":"标题","tag":"标签","Tag":"标签","Selesai":"完成","selesai":"完成","Batal":"取消","batal":"取消","Kembali":"返回","kembali":"返回","Lanjut":"继续","lanjut":"继续","Simpan":"保存","simpan":"保存","Hapus":"删除","hapus":"删除","Edit":"编辑","edit":"编辑","Tambah":"添加","tambah":"添加","Buka":"打开","buka":"打开","Membuka":"正在打开","membuka":"正在打开","dibuka":"已打开","Gratis":"免费","gratis":"免费","Bayar":"支付","bayar":"支付","Beli":"购买","beli":"购买","Deposit":"充值","deposit":"充值","Withdraw":"提现","withdraw":"提现","Pengajuan":"申请","pengajuan":"申请","Pendaftaran":"注册","pendaftaran":"注册","Konfirmasi":"确认","konfirmasi":"确认","notifikasi":"通知","Notifikasi":"通知","pesan":"消息","Pesan":"消息","link":"链接","tautan":"链接","channel":"频道","grup":"群组","Grup":"群组","Group":"群组","utama":"主要","ganti":"更改","Ganti":"更改","Bahasa":"语言","bahasa":"语言"}
+}
+
+
+# Full UI phrase translations for messages emitted directly by handlers.
+# These phrases intentionally preserve placeholders, numbers, CODEs, usernames,
+# URLs and other dynamic values.
+PHRASE_DICT = {
+"en": {
+"⚠️ <b>Kamu keluar dari channel wajib.</b>\n\nSilakan join kembali ke channel yang belum kamu ikuti agar bot bisa digunakan.":"⚠️ <b>You left a required channel.</b>\n\nPlease join the required channel(s) again to use the bot.",
+"💸 Saldo tersedia: Rp{int(ok['earnings'] or 0):,}\n\nKirim nominal WD.":"💸 Available balance: Rp{int(ok['earnings'] or 0):,}\n\nSend the withdrawal amount.",
+"Kirim metode WD (DANA/OVO/Bank).":"Send the withdrawal method (DANA/OVO/Bank).",
+"Kirim nomor rekening/e-wallet.":"Send your bank account or e-wallet number.",
+"❌ Saldo berubah, coba lagi.":"❌ Your balance changed. Please try again.",
+"💳 <b>DEPOSIT SALDO</b>\n\nPilih nominal:":"💳 <b>BALANCE DEPOSIT</b>\n\nChoose an amount:",
+"💳 <b>PAY DEPOSIT</b>\n\nNominal: <b>{fmt(amount)}</b>\nPilih pembayaran:":"💳 <b>PAY DEPOSIT</b>\n\nAmount: <b>{fmt(amount)}</b>\nChoose a payment method:",
+"❌ QR manual belum dipasang admin.":"❌ Manual QR has not been configured by the admin.",
+"🔄 Cek Pembayaran":"🔄 Check Payment",
+"❌ Pembayaran sedang ditutup.":"❌ Payments are currently closed.",
+"❌ Metode pembayaran sedang ditutup oleh admin.":"❌ Payment methods are currently disabled by the admin.",
+"❌ Gagal membuat pembayaran. Coba lagi.":"❌ Failed to create the payment. Please try again.",
+"❌ Data pembayaran tidak valid. Silakan pilih paket lagi.":"❌ Invalid payment data. Please select the package again.",
+"❌ Data nominal pembayaran tidak valid.":"❌ Invalid payment amount.",
+"❌ Provider pembayaran tidak valid.":"❌ Invalid payment provider.",
+"❌ Nominal QR 2 harus Rp5.000–Rp500.000.":"❌ QR 2 amount must be between Rp5,000 and Rp500,000.",
+"❌ Gagal menyimpan transaksi pembayaran. Coba lagi.":"❌ Failed to save the payment transaction. Please try again.",
+"ℹ️ QR pembayaran yang sama sudah dikirim. Silakan gunakan QR tersebut.":"ℹ️ The same payment QR has already been sent. Please use that QR.",
+"✅ QR pembayaran dikirim. Gunakan QR yang sama sampai pembayaran selesai.":"✅ Payment QR sent. Use the same QR until payment is completed.",
+"❌ ID pembayaran tidak valid.":"❌ Invalid payment ID.",
+"❌ Pembayaran tidak ditemukan.":"❌ Payment not found.",
+"✅ Pembayaran sudah berhasil diproses.":"✅ Payment has already been processed.",
+"⚠️ Gagal mengecek pembayaran. Coba lagi.":"⚠️ Failed to check payment. Please try again.",
+"⚠️ Pembayaran terdeteksi berhasil, tetapi proses saldo belum selesai. Coba cek lagi.":"⚠️ Payment was detected as successful, but the balance update is not finished yet. Please check again.",
+"⏳ Pembayaran belum diterima. Setelah transfer, tekan Cek Pembayaran lagi.":"⏳ Payment has not been received yet. After completing the transfer, tap Check Payment again.",
+"❌ Pembayaran sudah berhasil, tidak bisa dibatalkan.":"❌ Payment has already been completed and cannot be cancelled.",
+"📸 Kirim screenshot bukti pembayaran sekarang.":"📸 Send a screenshot of your payment proof now.",
+"❌ Pembayaran manual tidak ditemukan.":"❌ Manual payment not found.",
+"❌ Bukti pembayaran belum dikirim.":"❌ Payment proof has not been sent.",
+"❌ Kirim screenshot/foto bukti pembayaran.":"❌ Send a screenshot/photo of your payment proof.",
+"✅ Bukti pembayaran diterima.":"✅ Payment proof received.",
+"Menunggu persetujuan admin.":"Waiting for admin approval.",
+"❌ Kirim gambar QR.":"❌ Send a QR image.",
+"✅ QR manual berhasil disimpan.":"✅ Manual QR saved successfully.",
+"Sudah diproses.":"Already processed.",
+"❌ Pembayaran manual ditolak. Silakan lakukan pembayaran baru jika diperlukan.":"❌ Manual payment rejected. Please make a new payment if needed.",
+"Paket tidak tersedia.":"Package unavailable.",
+"❌ Pembayaran ditutup atau gagal.":"❌ Payment is closed or failed.",
+"❌ QR manual belum dipasang.":"❌ Manual QR has not been configured.",
+"📤 <b>UP FILE</b>\n\nKirim maksimal <b>{MAX_MEDIA}</b> media.":"📤 <b>UPLOAD FILE</b>\n\nSend up to <b>{MAX_MEDIA}</b> media files.",
+"Belum ada media.":"No media uploaded yet.",
+"❌ Judul tidak boleh kosong.":"❌ Title cannot be empty.",
+"❌ Media tidak ditemukan. Silakan mulai UP FILE lagi.":"❌ Media not found. Please start UP FILE again.",
+"❌ Harga tidak valid.":"❌ Invalid price.",
+"❌ Hanya Creator/Admin yang dapat membuat paid code. Kirim 0.":"❌ Only Creators/Admins can create paid codes. Send 0 for a free code.",
+"❌ Code tidak ditemukan atau tidak aktif.":"❌ Code not found or inactive.",
+"❌ Code sudah tidak ada.":"❌ Code no longer exists.",
+"❌ Code belum dihapus.":"❌ <b>Code was not deleted.</b>",
+"Code dan media B2 berhasil dihapus.":"Code and B2 media were deleted successfully.",
+"📢 Kirim pesan broadcast.":"📢 Send the broadcast message.",
+"📢 Kirim pesan yang akan dibroadcast.":"📢 Send the message to broadcast.",
+"❌ User tidak ditemukan.":"❌ User not found.",
+"❌ Angka tidak valid.":"❌ Invalid number.",
+"Field tidak dikenal.":"Unknown field.",
+"❌ Sesi edit sudah berakhir.":"❌ The edit session has expired.",
+"❌ Judul tidak boleh kosong.":"❌ Title cannot be empty.",
+"📝 Kirim judul baru untuk code ini.":"📝 Send a new title for this code.",
+"🏷 Kirim tag baru, pisahkan dengan spasi.":"🏷 Send new tags, separated by spaces.",
+"❌ Kirim angka harga.":"❌ Send a numeric price.",
+"❌ Harga harus Rp{PAID_CODE_MIN_IDR:,} s/d Rp{PAID_CODE_MAX_IDR:,}.":"❌ Price must be Rp{PAID_CODE_MIN_IDR:,} to Rp{PAID_CODE_MAX_IDR:,}.",
+"💰 Edit Harga":"💰 Edit Price",
+"📦 Tersimpan: <b>{len(media)}/{MAX_MEDIA}</b>":"📦 Saved: <b>{len(media)}/{MAX_MEDIA}</b>",
+"📝 <b>MASUKKAN JUDUL</b>\n\n📦 {len(media)} media siap disimpan.\n\nKirim judul code:":"📝 <b>ENTER TITLE</b>\n\n📦 {len(media)} media ready to save.\n\nSend the code title:",
+"🏷 <b>MASUKKAN TAG</b>\n\nContoh: <code>movie action 2026</code>\nKirim maksimal 10 tag. Jika tidak ada, kirim <code>-</code>.":"🏷 <b>ENTER TAGS</b>\n\nExample: <code>movie action 2026</code>\nSend up to 10 tags. If none, send <code>-</code>.",
+"💰 <b>MASUKKAN HARGA CODE</b>":"💰 <b>ENTER CODE PRICE</b>",
+"Creator dapat membuat paid code.":"Creators can create paid codes.",
+"Kirim <code>0</code> untuk FREE.":"Send <code>0</code> for FREE.",
+"📥 Kirim CODE yang ingin dibuka.":"📥 Send the CODE you want to open.",
+"📂 Buka Code (Gratis)":"📂 Open Code (Free)",
+
+
+
+"💰 Buka dengan Saldo • {fmt(price)}":"💰 Open with Balance • {fmt(price)}",
+
+
+
+
+"❌ <b>Saldo tidak cukup</b>":"❌ <b>Insufficient balance</b>",
+"Silakan isi saldo terlebih dahulu.":"Please top up your balance first.",
+"📁 Media ke {i}/{total}":"📁 Media {i}/{total}",
+"Backblaze metadata tidak tersedia":"Backblaze metadata unavailable",
+"Telegram file_id gagal: {str(telegram_error or 'tidak tersedia')[:180]}":"Telegram file_id failed: {str(telegram_error or 'unavailable')[:180]}",
+"⚠️ <b>MEDIA TIDAK TERSEDIA</b>":"⚠️ <b>MEDIA NOT AVAILABLE</b>",
+"Media gagal dikirim: <b>{len(missing)}</b>":"Failed to send media: <b>{len(missing)}</b>",
+"▶️ Lanjut kirim":"▶️ Continue sending",
+"Semua media sudah terkirim.":"All media have been sent.",
+"📦 <b>{sent}</b> media berhasil dikirim.":"📦 <b>{sent}</b> media sent successfully.",
+"⏳ Akses code sudah habis.":"⏳ Code access has expired.",
+"❌ Pengiriman media dibatalkan.":"❌ Media delivery cancelled.",
+"❌ Tidak dapat membuka media.":"❌ Unable to open the media.",
+"❌ Tidak dapat membuka.":"❌ Unable to open.",
+"✅ Berhasil dibuka!":"✅ Opened successfully!",
+"Berhasil dibuka!":"Opened successfully!",
+"⚠️ <b>Kuota buka CODE VIP hari ini sudah habis.</b>":"⚠️ <b>Today's VIP CODE opening limit has been reached.</b>",
+"Silakan perpanjang VIP untuk membuka code lagi.":"Please renew VIP to open the code again.",
+"❌ Pembayaran dengan Saldo gagal.":"❌ Balance payment failed.",
+"Semua metode pembayaran tidak tersedia.":"No payment methods are available.",
+"Semua metode pembayaran tidak tersedia untuk nominal ini.":"No payment methods are available for this amount.",
+"📥 Buka Code":"📥 Open Code",
+"Klik /start dulu di bot. Setelah itu kamu bisa menekan GET FILE.":"Click /start in the bot first. Then you can tap GET FILE.",
+"GET FILE dikirim ke chat pribadi.":"GET FILE has been sent to your private chat.",
+"Buka chat pribadi dengan bot lalu klik /start.":"Open a private chat with the bot and click /start.",
+"Jadilah kreator dan buat CODE berbayar dari media kamu.":"Become a Creator and make paid CODEs from your media.",
+
+"Belum ada code.":"No codes yet.",
+"Belum ada code yang dibuat.":"No codes have been created yet.",
+
+
+"❌ Username tidak valid. Masukkan username seperti <code>@username</code>.":"❌ Invalid username. Enter a username such as <code>@username</code>.",
+"❌ Username belum ditemukan di bot. Pastikan penerima sudah /start terlebih dahulu.":"❌ Username not found in the bot. Make sure the recipient has used /start first.",
+"❌ Kamu tidak bisa mengirim ke username sendiri.":"❌ You cannot send to your own username.",
+"❌ Nominal tidak valid. Masukkan angka lebih dari 0.":"❌ Invalid amount. Enter a number greater than 0.",
+"❌ Data pengguna tidak ditemukan.":"❌ User data not found.",
+
+
+
+"📎 <b>Media terdeteksi</b>\n\nTekan tombol di bawah untuk upload.":"📎 <b>Media detected</b>\n\nTap the button below to upload.",
+"🌐 <b>Pilih Bahasa / Choose Language / 选择语言</b>\n\nPilih bahasa yang akan digunakan bot:":"🌐 <b>Choose Language / 选择语言</b>\n\nChoose the language the bot will use:",
+"💎 VIP dapat membuka semua media tanpa biaya":"💎 VIP can open all media without additional cost",
+"⏳ VIP dapat membuka code yang sama setiap 30 menit.":"⏳ VIP can open the same code every 30 minutes.",
+},
+"zh": {
+"⚠️ <b>Kamu keluar dari channel wajib.</b>\n\nSilakan join kembali ke channel yang belum kamu ikuti agar bot bisa digunakan.":"⚠️ <b>你已退出必需的频道。</b>\n\n请重新加入尚未加入的必需频道，才能继续使用机器人。",
+"💸 Saldo tersedia: Rp{int(ok['earnings'] or 0):,}\n\nKirim nominal WD.":"💸 可用余额：Rp{int(ok['earnings'] or 0):,}\n\n请输入提现金额。",
+"Kirim metode WD (DANA/OVO/Bank).":"请输入提现方式（DANA/OVO/银行）。",
+"Kirim nomor rekening/e-wallet.":"请输入银行账户或电子钱包号码。",
+"❌ Saldo berubah, coba lagi.":"❌ 余额已发生变化，请重试。",
+"💳 <b>DEPOSIT SALDO</b>\n\nPilih nominal:":"💳 <b>余额充值</b>\n\n请选择金额：",
+"💳 <b>PAY DEPOSIT</b>\n\nNominal: <b>{fmt(amount)}</b>\nPilih pembayaran:":"💳 <b>充值支付</b>\n\n金额：<b>{fmt(amount)}</b>\n请选择支付方式：",
+"❌ QR manual belum dipasang admin.":"❌ 管理员尚未配置手动 QR。",
+"🔄 Cek Pembayaran":"🔄 检查支付",
+"❌ Pembayaran sedang ditutup.":"❌ 支付功能目前已关闭。",
+"❌ Metode pembayaran sedang ditutup oleh admin.":"❌ 支付方式目前已被管理员关闭。",
+"❌ Gagal membuat pembayaran. Coba lagi.":"❌ 创建支付失败，请重试。",
+"❌ Data pembayaran tidak valid. Silakan pilih paket lagi.":"❌ 支付数据无效，请重新选择套餐。",
+"❌ Data nominal pembayaran tidak valid.":"❌ 支付金额无效。",
+"❌ Provider pembayaran tidak valid.":"❌ 支付服务商无效。",
+"❌ Nominal QR 2 harus Rp5.000–Rp500.000.":"❌ QR 2 金额必须为 Rp5,000–Rp500,000。",
+"❌ Gagal menyimpan transaksi pembayaran. Coba lagi.":"❌ 保存支付交易失败，请重试。",
+"ℹ️ QR pembayaran yang sama sudah dikirim. Silakan gunakan QR tersebut.":"ℹ️ 相同的支付 QR 已发送，请使用该 QR。",
+"✅ QR pembayaran dikirim. Gunakan QR yang sama sampai pembayaran selesai.":"✅ 支付 QR 已发送，请使用同一个 QR 直到支付完成。",
+"❌ ID pembayaran tidak valid.":"❌ 支付 ID 无效。",
+"❌ Pembayaran tidak ditemukan.":"❌ 未找到支付记录。",
+"✅ Pembayaran sudah berhasil diproses.":"✅ 支付已处理完成。",
+"⚠️ Gagal mengecek pembayaran. Coba lagi.":"⚠️ 检查支付失败，请重试。",
+"⚠️ Pembayaran terdeteksi berhasil, tetapi proses saldo belum selesai. Coba cek lagi.":"⚠️ 已检测到支付成功，但余额更新尚未完成，请再次检查。",
+"⏳ Pembayaran belum diterima. Setelah transfer, tekan Cek Pembayaran lagi.":"⏳ 尚未收到支付。完成转账后，请再次点击“检查支付”。",
+"❌ Pembayaran sudah berhasil, tidak bisa dibatalkan.":"❌ 支付已成功，无法取消。",
+"📸 Kirim screenshot bukti pembayaran sekarang.":"📸 现在发送支付凭证截图。",
+"❌ Pembayaran manual tidak ditemukan.":"❌ 未找到手动支付。",
+"❌ Bukti pembayaran belum dikirim.":"❌ 尚未发送支付凭证。",
+"❌ Kirim screenshot/foto bukti pembayaran.":"❌ 请发送支付凭证截图/照片。",
+"✅ Bukti pembayaran diterima.":"✅ 已收到支付凭证。",
+"Menunggu persetujuan admin.":"等待管理员审核。",
+"❌ Kirim gambar QR.":"❌ 请发送 QR 图片。",
+"✅ QR manual berhasil disimpan.":"✅ 手动 QR 保存成功。",
+"Sudah diproses.":"已处理。",
+"❌ Pembayaran manual ditolak. Silakan lakukan pembayaran baru jika diperlukan.":"❌ 手动支付已被拒绝。如有需要，请重新支付。",
+"Paket tidak tersedia.":"套餐不可用。",
+"❌ Pembayaran ditutup atau gagal.":"❌ 支付已关闭或失败。",
+"❌ QR manual belum dipasang.":"❌ 尚未配置手动 QR。",
+"Belum ada media.":"尚未上传媒体。",
+"❌ Judul tidak boleh kosong.":"❌ 标题不能为空。",
+"❌ Media tidak ditemukan. Silakan mulai UP FILE lagi.":"❌ 未找到媒体，请重新开始 UP FILE。",
+"❌ Harga tidak valid.":"❌ 价格无效。",
+"❌ Hanya Creator/Admin yang dapat membuat paid code. Kirim 0.":"❌ 只有创作者/管理员可以创建付费 CODE。免费 CODE 请发送 0。",
+"❌ Code tidak ditemukan atau tidak aktif.":"❌ 未找到 CODE 或 CODE 已停用。",
+"❌ Code sudah tidak ada.":"❌ CODE 已不存在。",
+"❌ Code belum dihapus.":"❌ <b>CODE 尚未删除。</b>",
+"Code dan media B2 berhasil dihapus.":"CODE 和 B2 媒体已成功删除。",
+"📢 Kirim pesan broadcast.":"📢 发送广播消息。",
+"📢 Kirim pesan yang akan dibroadcast.":"📢 发送要广播的消息。",
+"❌ User tidak ditemukan.":"❌ 未找到用户。",
+"❌ Angka tidak valid.":"❌ 数字无效。",
+"Field tidak dikenal.":"未知字段。",
+"❌ Sesi edit sudah berakhir.":"❌ 编辑会话已过期。",
+"📝 Kirim judul baru untuk code ini.":"📝 请输入此 CODE 的新标题。",
+"🏷 Kirim tag baru, pisahkan dengan spasi.":"🏷 请输入新标签，用空格分隔。",
+"❌ Kirim angka harga.":"❌ 请输入数字价格。",
+"💰 Edit Harga":"💰 编辑价格",
+"📦 Tersimpan: <b>{len(media)}/{MAX_MEDIA}</b>":"📦 已保存：<b>{len(media)}/{MAX_MEDIA}</b>",
+"📝 <b>MASUKKAN JUDUL</b>\n\n📦 {len(media)} media siap disimpan.\n\nKirim judul code:":"📝 <b>输入标题</b>\n\n📦 {len(media)} 个媒体已准备保存。\n\n请输入 CODE 标题：",
+"🏷 <b>MASUKKAN TAG</b>\n\nContoh: <code>movie action 2026</code>\nKirim maksimal 10 tag. Jika tidak ada, kirim <code>-</code>.":"🏷 <b>输入标签</b>\n\n示例：<code>movie action 2026</code>\n最多发送 10 个标签。没有标签请发送 <code>-</code>。",
+"💰 <b>MASUKKAN HARGA CODE</b>":"💰 <b>输入 CODE 价格</b>",
+"Creator dapat membuat paid code.":"创作者可以创建付费 CODE。",
+"Kirim <code>0</code> untuk FREE.":"发送 <code>0</code> 创建免费 CODE。",
+"📥 Kirim CODE yang ingin dibuka.":"📥 发送要打开的 CODE。",
+"📂 Buka Code (Gratis)":"📂 免费打开 CODE",
+
+
+
+"💰 Buka dengan Saldo • {fmt(price)}":"💰 使用余额打开 • {fmt(price)}",
+
+
+
+
+"❌ <b>Saldo tidak cukup</b>":"❌ <b>余额不足</b>",
+"Silakan isi saldo terlebih dahulu.":"请先充值余额。",
+"📁 Media ke {i}/{total}":"📁 媒体 {i}/{total}",
+"Backblaze metadata tidak tersedia":"Backblaze 元数据不可用",
+"Telegram file_id gagal: {str(telegram_error or 'tidak tersedia')[:180]}":"Telegram file_id 失败：{str(telegram_error or '不可用')[:180]}",
+"⚠️ <b>MEDIA TIDAK TERSEDIA</b>":"⚠️ <b>媒体不可用</b>",
+"Media gagal dikirim: <b>{len(missing)}</b>":"发送失败的媒体：<b>{len(missing)}</b>",
+"▶️ Lanjut kirim":"▶️ 继续发送",
+"Semua media sudah terkirim.":"所有媒体已发送。",
+"📦 <b>{sent}</b> media berhasil dikirim.":"📦 已成功发送 <b>{sent}</b> 个媒体。",
+"⏳ Akses code sudah habis.":"⏳ CODE 访问权限已过期。",
+"❌ Pengiriman media dibatalkan.":"❌ 媒体发送已取消。",
+"❌ Tidak dapat membuka media.":"❌ 无法打开媒体。",
+"❌ Tidak dapat membuka.":"❌ 无法打开。",
+"✅ Berhasil dibuka!":"✅ 打开成功！",
+"Berhasil dibuka!":"打开成功！",
+"⚠️ <b>Kuota buka CODE VIP hari ini sudah habis.</b>":"⚠️ <b>今日 VIP CODE 打开次数已用完。</b>",
+"Silakan perpanjang VIP untuk membuka code lagi.":"请续费 VIP 后再次打开 CODE。",
+"❌ Pembayaran dengan Saldo gagal.":"❌ 余额支付失败。",
+"Semua metode pembayaran tidak tersedia.":"所有支付方式均不可用。",
+"Semua metode pembayaran tidak tersedia untuk nominal ini.":"该金额没有可用的支付方式。",
+"📥 Buka Code":"📥 打开 CODE",
+"Klik /start dulu di bot. Setelah itu kamu bisa menekan GET FILE.":"请先在机器人中点击 /start，然后即可点击 GET FILE。",
+"GET FILE dikirim ke chat pribadi.":"GET FILE 已发送到私聊。",
+"Buka chat pribadi dengan bot lalu klik /start.":"打开与机器人的私聊，然后点击 /start。",
+"Jadilah kreator dan buat CODE berbayar dari media kamu.":"成为创作者，用你的媒体创建付费 CODE。",
+
+"Belum ada code.":"还没有 CODE。",
+"Belum ada code yang dibuat.":"还没有创建 CODE。",
+
+
+"❌ Username tidak valid. Masukkan username seperti <code>@username</code>.":"❌ 用户名无效。请输入类似 <code>@username</code> 的用户名。",
+"❌ Username belum ditemukan di bot. Pastikan penerima sudah /start terlebih dahulu.":"❌ 机器人中未找到该用户名。请确保收款人已经使用 /start。",
+"❌ Kamu tidak bisa mengirim ke username sendiri.":"❌ 不能向自己的用户名发送。",
+"❌ Nominal tidak valid. Masukkan angka lebih dari 0.":"❌ 金额无效。请输入大于 0 的数字。",
+"❌ Data pengguna tidak ditemukan.":"❌ 未找到用户数据。",
+
+
+
+"📎 <b>Media terdeteksi</b>\n\nTekan tombol di bawah untuk upload.":"📎 <b>检测到媒体</b>\n\n点击下面的按钮上传。",
+"🌐 <b>Pilih Bahasa / Choose Language / 选择语言</b>\n\nPilih bahasa yang akan digunakan bot:":"🌐 <b>选择语言</b>\n\n请选择机器人使用的语言：",
+"💎 VIP dapat membuka semua media tanpa biaya":"💎 VIP 可以免费打开所有媒体",
+"⏳ VIP dapat membuka code yang sama setiap 30 menit.":"⏳ VIP 每 30 分钟可以再次打开相同的 CODE。",
+}
+}
+
+
+# Additional common phrases/words found in subscription, maintenance, upload,
+# payment and account flows.
+WORD_DICT["en"].update({
+ "dulu":"first","join":"join","Join":"Join","WAJIB":"REQUIRED","wajib":"required",
+ "kedua":"both","bawah":"below","Tekan":"Tap","tekan":"tap","Verifikasi":"Verify",
+ "verifikasi":"verify","keluar":"left","channel":"channel","Saluran":"Channel",
+ "kembali":"again","lagi":"again","nanti":"later","screenshot":"screenshot",
+ "sampai":"until","masih":"still","akan":"will","diperlukan":"required",
+ "diproses":"processed","dipasang":"configured","dipakai":"used","dipilih":"selected",
+ "ditambahkan":"added","diberikan":"given","menarik":"withdraw","permintaan":"request",
+ "pengaturan":"settings","Pengaturan":"Settings","panduan":"guide","Panduan":"Guide",
+ "terlebih":"first","dahulu":"first","coba":"try","menggunakan":"use","digunakan":"used",
+ "mengirim":"send","mengirimkan":"send","menerima":"receive","menerima":"receive",
+ "terkait":"related","berikutnya":"next","berikut":"following","masih":"still",
+ "otomatis":"automatically","otomatisnya":"automatically","wajib":"required",
+})
+WORD_DICT["zh"].update({
+ "dulu":"先","join":"加入","Join":"加入","WAJIB":"必须","wajib":"必须",
+ "kedua":"两个","bawah":"下面","Tekan":"点击","tekan":"点击","Verifikasi":"验证",
+ "verifikasi":"验证","keluar":"退出","channel":"频道","Saluran":"频道",
+ "kembali":"再次","lagi":"再次","nanti":"稍后","sampai":"直到","masih":"仍然",
+ "akan":"将","diperlukan":"需要","diproses":"已处理","dipasang":"已配置",
+ "dipakai":"使用","dipilih":"已选择","ditambahkan":"已添加","diberikan":"已提供",
+ "pengaturan":"设置","Pengaturan":"设置","panduan":"指南","Panduan":"指南",
+ "terlebih":"先","dahulu":"先","coba":"重试","menggunakan":"使用","digunakan":"使用",
+ "mengirim":"发送","mengirimkan":"发送","menerima":"接收","terkait":"相关",
+ "berikutnya":"下一步","otomatis":"自动","wajib":"必须",
+})
+
+
+# Complete screen/button translations for the interactive user UI.
+TARGET_UI_DICT = {
+    "en": {
+        "📤 Up File":"📤 Upload File","📥 Get File":"📥 Get File","🔑 Code":"🔑 Code",
+        "🏆 Top 10 Code":"🏆 Top 10 Code","💎 Buy VIP":"💎 Buy VIP",
+        "💳 Deposit":"💳 Deposit",
+        "📂 Menu Lainnya":"📂 More Menu","📋 My Code":"📋 My Codes","👥 Group Code":"👥 Group Code",
+        "👑 Creator":"👑 Creator","💸 Withdraw":"💸 Withdraw","👑 Jadi Kreator":"👑 Become Creator",
+        "❓ Help":"❓ Help","🌐 Ganti Bahasa":"🌐 Change Language","🔙 Kembali":"🔙 Back",
+        "📝 Masukkan Judul":"📝 Enter Title","📝 MASUKKAN JUDUL":"📝 ENTER TITLE",
+        "🏷 MASUKKAN TAG":"🏷 ENTER TAG","💰 MASUKKAN HARGA CODE":"💰 ENTER CODE PRICE",
+        "✅ Selesai Upload":"✅ Finish Upload","❌ Batal":"❌ Cancel",
+        "📥 Buka Code":"📥 Open Code","📂 Buka Code (Gratis)":"📂 Open Code (Free)",
+        "Buka Media":"Open Media","Kembali":"Back","💎 Buka Gratis (VIP)":"💎 Open Free (VIP)",
+        "🧾 QR Manual":"🧾 Manual QR",
+        
+        "👍 Like":"👍 Like","👎 Hate":"👎 Dislike","⭐ Favorit":"⭐ Favorite",
+        "🔝 Top 10":"🔝 Top 10","⭐ Recommendation":"⭐ Recommendations","🔑 All Code":"🔑 All Codes",
+        "🔙 Semua Code":"🔙 All Codes",
+        "💎 BUY VIP":"💎 BUY VIP","💎 Buy VIP":"💎 Buy VIP","Pilih paket:":"Choose a package:",
+        "PROGRAM KREATOR":"CREATOR PROGRAM","MY CODE":"MY CODES",
+        "ALL CODE":"ALL CODES","TOP 10 CODE":"TOP 10 CODES","RECOMMENDATION":"RECOMMENDATIONS",
+        "Group Chat Code":"Group Code","Channel Notifikasi":"Notification Channel",
+        "Channel All Code":"All Code Channel","Channel Backup":"Backup Channel",
+        "Group code":"Group Code","Channel all code":"All Code Channel",
+        "Channel backup":"Backup Channel","Channel notifikasi":"Notification Channel",
+        "❌ Code tidak valid.":"❌ Invalid code.","❌ Code tidak ditemukan.":"❌ Code not found.",
+        "Belum ada code.":"No codes yet.","Belum ada media.":"No media yet.",
+        "Belum ada":"None yet","Saldo tidak cukup":"Insufficient balance",
+        
+        
+        
+        "Silakan isi saldo terlebih dahulu.":"Please deposit funds first.",
+        "Buka dengan":"Open with","Pilih pembayaran:":"Choose a payment method:",
+        "Pilih cara membuka:":"Choose how to open:","Sukses Membuat":"Success Create",
+        "Judul":"Title","Tag":"Tag","Tipe":"Type","Bot":"Bot","media":"media",
+        "gratis":"free","berbayar":"paid",
+        "Bayar Pendaftaran":"Registration Payment","Join Kreator":"Join Creator",
+        
+        "Hanya Creator/Admin yang dapat membuat paid code. Kirim 0.":"Only Creators/Admins can create paid codes. Send 0.",
+        "Harga tidak valid.":"Invalid price.","Upload dibatalkan.":"Upload cancelled.",
+        "Media tidak ditemukan. Silakan mulai UP FILE lagi.":"Media not found. Please start Upload File again.",
+        "Loading…":"Loading…","Menunggu pembayaran":"Waiting for payment",
+        "Cek Pembayaran":"Check Payment","Batal":"Cancel","GET FILE":"GET FILE","🏠 Menu":"🏠 Menu","👑 Join Kreator":"👑 Join Creator","💳 Bayar Pendaftaran Rp200.000":"💳 Pay Registration Rp200,000","📤 Up File":"📤 Upload File","▶️ Lanjut kirim":"▶️ Continue Sending","‹ Prev":"‹ Previous","Next ›":"Next ›","⚡ BayarGG":"⚡ BayarGG","💳 Cashi":"💳 Cashi","🔄 Cek Pembayaran":"🔄 Check Payment"
+    },
+    "zh": {
+        "📤 Up File":"📤 上传文件","📥 Get File":"📥 获取文件","🔑 Code":"🔑 代码",
+        "🏆 Top 10 Code":"🏆 热门前10代码","💎 Buy VIP":"💎 购买 VIP",
+        "💳 Deposit":"💳 充值",
+        "📂 Menu Lainnya":"📂 更多菜单","📋 My Code":"📋 我的代码","👥 Group Code":"👥 代码群",
+        "👑 Creator":"👑 创作者","💸 Withdraw":"💸 提现","👑 Jadi Kreator":"👑 成为创作者",
+        "❓ Help":"❓ 帮助","🌐 Ganti Bahasa":"🌐 更换语言","🔙 Kembali":"🔙 返回",
+        "📝 MASUKKAN JUDUL":"📝 输入标题","🏷 MASUKKAN TAG":"🏷 输入标签","💰 MASUKKAN HARGA CODE":"💰 输入代码价格",
+        "✅ Selesai Upload":"✅ 完成上传","❌ Batal":"❌ 取消","📥 Buka Code":"📥 打开代码",
+        "📂 Buka Code (Gratis)":"📂 免费打开代码","Buka Media":"打开媒体","Kembali":"返回",
+        "💎 Buka Gratis (VIP)":"💎 VIP 免费打开","🧾 QR Manual":"🧾 手动二维码",
+        
+        "👍 Like":"👍 喜欢","👎 Hate":"👎 不喜欢","⭐ Favorit":"⭐ 收藏",
+        "🔝 Top 10":"🔝 热门前10","⭐ Recommendation":"⭐ 推荐","🔑 All Code":"🔑 全部代码",
+        "🔙 Semua Code":"🔙 所有代码","💎 BUY VIP":"💎 购买 VIP",
+        "Pilih paket:":"选择套餐：","PROGRAM KREATOR":"创作者计划",
+        "MY CODE":"我的代码","ALL CODE":"全部代码","TOP 10 CODE":"热门前10代码","RECOMMENDATION":"推荐",
+        "Group Chat Code":"代码群","Channel Notifikasi":"通知频道","Channel All Code":"全部代码频道",
+        "Channel Backup":"备份频道","Group code":"代码群","Channel all code":"全部代码频道",
+        "Channel backup":"备份频道","Channel notifikasi":"通知频道",
+        "❌ Code tidak valid.":"❌ 代码无效。","❌ Code tidak ditemukan.":"❌ 未找到代码。",
+        "Belum ada code.":"暂无代码。","Belum ada media.":"暂无媒体。",
+        "Saldo tidak cukup":"余额不足",
+        
+        "Silakan isi saldo terlebih dahulu.":"请先充值余额。","Buka dengan":"使用以下方式打开",
+        "Pilih pembayaran:":"选择支付方式：","Pilih cara membuka:":"选择打开方式：",
+        "Sukses Membuat":"创建成功","Judul":"标题","Tag":"标签","Tipe":"类型","Bot":"机器人",
+        "media":"媒体","gratis":"免费","berbayar":"付费",
+        "Join Kreator":"加入创作者",
+        "Harga tidak valid.":"价格无效。","Upload dibatalkan.":"上传已取消。",
+        "Media tidak ditemukan. Silakan mulai UP FILE lagi.":"未找到媒体，请重新开始上传文件。",
+        "Loading…":"加载中…","Cek Pembayaran":"检查支付","Batal":"取消","GET FILE":"获取文件","🏠 Menu":"🏠 菜单","👑 Join Kreator":"👑 加入创作者","💳 Bayar Pendaftaran Rp200.000":"💳 支付注册费 Rp200,000","📤 Up File":"📤 上传文件","▶️ Lanjut kirim":"▶️ 继续发送","‹ Prev":"‹ 上一页","Next ›":"下一页 ›","⚡ BayarGG":"⚡ BayarGG","💳 Cashi":"💳 Cashi","🔄 Cek Pembayaran":"🔄 检查支付"
+    }
+}
+
+# FINAL UI COVERAGE: phrases that are emitted directly by handlers.  TrackedBot
+# applies translate() to every outgoing message/caption/callback and to inline
+# keyboard labels, so these entries also cover handlers that do not explicitly
+# call translate(). Dynamic values (CODE, usernames, IDs, prices, URLs) remain
+# untouched.
+FINAL_PHRASES = {
+"en": {
+ "Pilih bahasa yang akan digunakan bot:": "Choose the language the bot will use:",
+ "Language unavailable.": "Language unavailable.",
+ "❌ Code tidak ditemukan.": "❌ Code not found.",
+ "❌ Code tidak valid.": "❌ Invalid code.",
+ "📥 Kirim CODE yang ingin dibuka.": "📥 Send the CODE you want to open.",
+ "🔙 Kembali": "🔙 Back",
+ "📤 Up File": "📤 Upload File",
+ "📥 Get File": "📥 Get File",
+ "🔑 All Code": "🔑 All Codes",
+ "🔝 Top 10": "🔝 Top 10",
+ "⭐ Recommendation": "⭐ Recommendations",
+ "Belum ada code yang dibuat.": "No codes have been created yet.",
+ "Belum ada code.": "No codes yet.",
+ "Klik <b>Judul</b> untuk mencari/membuka media yang terhubung dengan CODE tersebut.": "Tap the <b>Title</b> to find or open the media linked to that CODE.",
+ 
+ 
+ "❌ Saldo tidak cukup": "❌ Insufficient balance",
+ 
+ 
+ "Silakan isi saldo terlebih dahulu.": "Please top up your balance first.",
+ 
+ 
+ 
+ 
+ "💎 <b>BUY VIP</b>\n\nPilih paket:": "💎 <b>BUY VIP</b>\n\nChoose a package:",
+ "💳 <b>DEPOSIT SALDO</b>\n\nPilih nominal:": "💳 <b>DEPOSIT BALANCE</b>\n\nChoose an amount:",
+ "💳 <b>PAY DEPOSIT</b>": "💳 <b>PAY DEPOSIT</b>",
+ "Pilih nominal:": "Choose an amount:",
+ "Pilih pembayaran:": "Choose a payment method:",
+ 
+ 
+ "❌ Pembayaran manual tidak ditemukan.": "❌ Manual payment not found.",
+ "❌ Pembayaran tidak ditemukan.": "❌ Payment not found.",
+ "❌ Pembayaran manual dibatalkan dan QR dihapus.": "❌ Manual payment cancelled and the QR was removed.",
+ "✅ Pembayaran sudah disetujui.": "✅ Payment has already been approved.",
+ "✅ Pembayaran manual disetujui.": "✅ Manual payment approved.",
+ "❌ Pembayaran manual ditolak.": "❌ Manual payment rejected.",
+ "QR Manual": "Manual QR",
+ "🔄 Cek Pembayaran": "🔄 Check Payment",
+ "❌ Batal": "❌ Cancel",
+ "📸 Kirim screenshot bukti pembayaran sekarang.": "📸 Send a screenshot of your payment proof now.",
+ "❌ Kirim screenshot/foto bukti pembayaran.": "❌ Send a screenshot/photo of your payment proof.",
+ "❌ Kirim gambar QR.": "❌ Send a QR image.",
+ "💎 <b>VIP</b>": "💎 <b>VIP</b>",
+ "Paket tidak tersedia.": "Package unavailable.",
+ "❌ Pembayaran ditutup atau gagal.": "❌ Payment is closed or failed.",
+ "❌ QR manual belum dipasang admin.": "❌ Manual QR has not been configured by the admin.",
+ "❌ QR manual belum dipasang.": "❌ Manual QR has not been configured.",
+ "❌ Data pembayaran tidak valid. Silakan pilih paket lagi.": "❌ Invalid payment data. Please choose the package again.",
+ "❌ Data nominal pembayaran tidak valid.": "❌ Invalid payment amount.",
+ "❌ Provider pembayaran tidak valid.": "❌ Invalid payment provider.",
+ "❌ Gagal menyimpan transaksi pembayaran. Coba lagi.": "❌ Failed to save the payment transaction. Please try again.",
+ "ℹ️ QR pembayaran yang sama sudah dikirim. Silakan gunakan QR tersebut.": "ℹ️ The same payment QR has already been sent. Please use that QR.",
+ "✅ QR pembayaran dikirim. Gunakan QR yang sama sampai pembayaran selesai.": "✅ Payment QR sent. Use the same QR until payment is completed.",
+ "⚠️ Gagal mengecek pembayaran. Coba lagi.": "⚠️ Failed to check payment. Please try again.",
+ "⏳ Pembayaran belum diterima. Setelah transfer, tekan Cek Pembayaran lagi.": "⏳ Payment has not been received yet. After transferring, tap Check Payment again.",
+ "❌ Pembayaran sudah berhasil, tidak bisa dibatalkan.": "❌ Payment has already been completed and cannot be cancelled.",
+ "❌ Pembayaran tidak ditemukan.": "❌ Payment not found.",
+ "📤 <b>UP FILE</b>": "📤 <b>UPLOAD FILE</b>",
+ "Kirim maksimal": "Send up to",
+ "media.": "media files.",
+ "Setelah selesai tekan <b>✅ Selesai Upload</b>.": "When finished, tap <b>✅ Finish Upload</b>.",
+ "Media sampai 20 MB disimpan ke Backblaze B2.": "Media up to 20 MB is stored in Backblaze B2.",
+ "Media di atas 20 MB otomatis memakai Telegram file_id.": "Media above 20 MB automatically uses the Telegram file_id.",
+ "✅ Selesai Upload": "✅ Finish Upload",
+ "❌ Media tidak ditemukan. Silakan mulai UP FILE lagi.": "❌ Media not found. Please start UPLOAD FILE again.",
+ "📝 <b>MASUKKAN JUDUL</b>": "📝 <b>ENTER TITLE</b>",
+ "Kirim judul code:": "Send the code title:",
+ "🏷 <b>MASUKKAN TAG</b>": "🏷 <b>ENTER TAGS</b>",
+ "Kirim maksimal 10 tag.": "Send up to 10 tags.",
+ "Jika tidak ada, kirim <code>-</code>.": "If none, send <code>-</code>.",
+ "Contoh:": "Example:",
+ "💰 <b>MASUKKAN HARGA CODE</b>": "💰 <b>ENTER CODE PRICE</b>",
+ "Creator dapat membuat paid code.": "Creators can create paid codes.",
+ "Kirim <code>0</code> untuk FREE.": "Send <code>0</code> for FREE.",
+ "❌ Harga tidak valid.": "❌ Invalid price.",
+ "❌ Harga harus": "❌ Price must be",
+ "❌ Hanya Creator/Admin yang dapat membuat paid code. Kirim 0.": "❌ Only Creators/Admins can create paid codes. Send 0 for a free code.",
+ "📦 Tersimpan:": "📦 Saved:",
+ "👑 <b>Creator</b>": "👑 <b>Creator</b>",
+ "💰 Saldo Pendapatan": "💰 Earnings Balance",
+ "💵 Pendapatan Hari Ini": "💵 Today's Earnings",
+ "📅 Pendapatan Bulan Ini": "📅 This Month's Earnings",
+ "📦 Total Penjualan": "📦 Total Sales",
+ "👁 Total Dibuka": "👁 Total Opens",
+ "Paid upload hari ini:": "Paid upload today:",
+ "SUDAH": "DONE",
+ "WAJIB": "REQUIRED",
+ "Hanya Creator.": "Creator only.",
+ "🔙 Kembali": "🔙 Back",
+ "👑 <b>PROGRAM KREATOR</b>": "👑 <b>CREATOR PROGRAM</b>",
+ "Jadilah kreator dan buat CODE berbayar dari media kamu.": "Become a Creator and make paid CODEs from your media.",
+ "Biaya pendaftaran": "Registration fee",
+ "Persyaratan & skema pengembalian:": "Requirements & refund scheme:",
+ "Periode evaluasi:": "Evaluation period:",
+ "Jika berhasil menarik": "If you successfully bring",
+ "member": "members",
+ "pengembalian/komisi pendaftaran": "registration refund/commission",
+ "Catatan:": "Note:",
+ "Tekan <b>Join Kreator</b>": "Tap <b>Join Creator</b>",
+ "👑 Join Kreator": "👑 Join Creator",
+ "💳 Bayar Pendaftaran": "💳 Pay Registration Fee",
+ "👥 Group Code": "👥 Group Code",
+ "📚 Channel All Code": "📚 All Code Channel",
+ "💾 Channel Backup": "💾 Backup Channel",
+ "🔔 Channel Notifikasi": "🔔 Notification Channel",
+ "🔗 <b>LINK BOT</b>\n\nPilih tujuan yang kamu perlukan:": "🔗 <b>BOT LINKS</b>\n\nChoose the destination you need:",
+ "📎 <b>Media terdeteksi</b>\n\nTekan tombol di bawah untuk upload.": "📎 <b>Media detected</b>\n\nTap the button below to upload.",
+ 
+ 
+ 
+ 
+ 
+},
+"zh": {
+ "Pilih bahasa yang akan digunakan bot:": "请选择机器人使用的语言：",
+ "❌ Code tidak ditemukan.": "❌ 未找到 CODE。",
+ "❌ Code tidak valid.": "❌ CODE 无效。",
+ "📥 Kirim CODE yang ingin dibuka.": "📥 发送要打开的 CODE。",
+ "🔙 Kembali": "🔙 返回",
+ "📤 Up File": "📤 上传文件",
+ "📥 Get File": "📥 获取文件",
+ "🔑 All Code": "🔑 全部代码",
+ "🔝 Top 10": "🔝 TOP 10",
+ "⭐ Recommendation": "⭐ 推荐",
+ "Belum ada code yang dibuat.": "还没有创建任何 CODE。",
+ "Belum ada code.": "暂无 CODE。",
+ "Klik <b>Judul</b> untuk mencari/membuka media yang terhubung dengan CODE tersebut.": "点击<b>标题</b>查找或打开关联的媒体。",
+ 
+ 
+ "❌ Saldo tidak cukup": "❌ 余额不足",
+ 
+ 
+ "Silakan isi saldo terlebih dahulu.": "请先充值余额。",
+ 
+ 
+ 
+ 
+ "Pilih paket:": "请选择套餐：",
+ "Pilih nominal:": "请选择金额：",
+ "Pilih pembayaran:": "请选择支付方式：",
+ "❌ Pembayaran manual tidak ditemukan.": "❌ 未找到手动支付。",
+ "❌ Pembayaran tidak ditemukan.": "❌ 未找到支付记录。",
+ "❌ Pembayaran manual dibatalkan dan QR dihapus.": "❌ 手动支付已取消，QR 已删除。",
+ "📸 Kirim screenshot bukti pembayaran sekarang.": "📸 现在发送支付凭证截图。",
+ "❌ Kirim screenshot/foto bukti pembayaran.": "❌ 请发送支付凭证截图/照片。",
+ "❌ Kirim gambar QR.": "❌ 请发送 QR 图片。",
+ "QR Manual": "手动 QR",
+ "🔄 Cek Pembayaran": "🔄 检查支付",
+ "❌ Batal": "❌ 取消",
+ "Paket tidak tersedia.": "套餐不可用。",
+ "❌ Pembayaran ditutup atau gagal.": "❌ 支付已关闭或失败。",
+ "❌ QR manual belum dipasang admin.": "❌ 管理员尚未配置手动 QR。",
+ "❌ QR manual belum dipasang.": "❌ 尚未配置手动 QR。",
+ "❌ Data pembayaran tidak valid. Silakan pilih paket lagi.": "❌ 支付数据无效，请重新选择套餐。",
+ "❌ Data nominal pembayaran tidak valid.": "❌ 支付金额无效。",
+ "❌ Provider pembayaran tidak valid.": "❌ 支付服务商无效。",
+ "❌ Gagal menyimpan transaksi pembayaran. Coba lagi.": "❌ 保存支付交易失败，请重试。",
+ "ℹ️ QR pembayaran yang sama sudah dikirim. Silakan gunakan QR tersebut.": "ℹ️ 相同的支付 QR 已发送，请使用该 QR。",
+ "✅ QR pembayaran dikirim. Gunakan QR yang sama sampai pembayaran selesai.": "✅ 支付 QR 已发送，请使用同一个 QR 直到支付完成。",
+ "⚠️ Gagal mengecek pembayaran. Coba lagi.": "⚠️ 检查支付失败，请重试。",
+ "⏳ Pembayaran belum diterima. Setelah transfer, tekan Cek Pembayaran lagi.": "⏳ 尚未收到支付。完成转账后，请再次点击检查支付。",
+ "❌ Pembayaran sudah berhasil, tidak bisa dibatalkan.": "❌ 支付已成功，无法取消。",
+ "📤 <b>UP FILE</b>": "📤 <b>上传文件</b>",
+ "Kirim maksimal": "最多发送",
+ "media.": "个媒体文件。",
+ "Setelah selesai tekan <b>✅ Selesai Upload</b>.": "完成后点击<b>✅ 完成上传</b>。",
+ "Media sampai 20 MB disimpan ke Backblaze B2.": "20 MB 以内的媒体会保存到 Backblaze B2。",
+ "Media di atas 20 MB otomatis memakai Telegram file_id.": "超过 20 MB 的媒体会自动使用 Telegram file_id。",
+ "✅ Selesai Upload": "✅ 完成上传",
+ "❌ Media tidak ditemukan. Silakan mulai UP FILE lagi.": "❌ 未找到媒体，请重新开始上传。",
+ "📝 <b>MASUKKAN JUDUL</b>": "📝 <b>输入标题</b>",
+ "Kirim judul code:": "发送 CODE 标题：",
+ "🏷 <b>MASUKKAN TAG</b>": "🏷 <b>输入标签</b>",
+ "Kirim maksimal 10 tag.": "最多发送 10 个标签。",
+ "Jika tidak ada, kirim <code>-</code>.": "如果没有，请发送 <code>-</code>。",
+ "Contoh:": "示例：",
+ "💰 <b>MASUKKAN HARGA CODE</b>": "💰 <b>输入 CODE 价格</b>",
+ "Creator dapat membuat paid code.": "创作者可以创建付费 CODE。",
+ "Kirim <code>0</code> untuk FREE.": "发送 <code>0</code> 表示免费。",
+ "❌ Harga tidak valid.": "❌ 价格无效。",
+ "❌ Hanya Creator/Admin yang dapat membuat paid code. Kirim 0.": "❌ 只有创作者/管理员可以创建付费 CODE。发送 0 表示免费。",
+ "📦 Tersimpan:": "📦 已保存：",
+ "💰 Saldo Pendapatan": "💰 收益余额",
+ "💵 Pendapatan Hari Ini": "💵 今日收益",
+ "📅 Pendapatan Bulan Ini": "📅 本月收益",
+ "📦 Total Penjualan": "📦 总销售量",
+ "👁 Total Dibuka": "👁 总打开次数",
+ "Paid upload hari ini:": "今日付费上传：",
+ "SUDAH": "已完成",
+ "WAJIB": "必须",
+ "Hanya Creator.": "仅限创作者。",
+ "👑 <b>PROGRAM KREATOR</b>": "👑 <b>创作者计划</b>",
+ "Jadilah kreator dan buat CODE berbayar dari media kamu.": "成为创作者，用你的媒体创建付费 CODE。",
+ "Persyaratan & skema pengembalian:": "要求和返还方案：",
+ "Catatan:": "注意：",
+ "Tekan <b>Join Kreator</b>": "点击<b>加入创作者</b>",
+ "👑 Join Kreator": "👑 加入创作者",
+ "💳 Bayar Pendaftaran": "💳 支付注册费",
+ "👥 Group Code": "👥 群组 CODE",
+ "📚 Channel All Code": "📚 全部 CODE 频道",
+ "💾 Channel Backup": "💾 备份频道",
+ "🔔 Channel Notifikasi": "🔔 通知频道",
+ "🔗 <b>LINK BOT</b>\n\nPilih tujuan yang kamu perlukan:": "🔗 <b>机器人链接</b>\n\n请选择需要的目标：",
+ "📎 <b>Media terdeteksi</b>\n\nTekan tombol di bawah untuk upload.": "📎 <b>检测到媒体</b>\n\n点击下面的按钮上传。",
+ 
+ 
+ 
+ 
+ 
+}
+}
+
+
+def translate(text: str | None, lang: str) -> str | None:
+    """Translate bot-generated UI while preserving dynamic values and HTML."""
+    if text is None or lang == "id" or lang not in SUPPORTED:
+        return text
+    out = text
+
+    # Final handler coverage has priority.
+    for src, dst in sorted(FINAL_PHRASES.get(lang, {}).items(), key=lambda x: len(x[0]), reverse=True):
+        out = out.replace(src, dst)
+
+    # Exact screen/button phrases have priority over generic word translation.
+    for src, dst in sorted(TARGET_UI_DICT.get(lang, {}).items(), key=lambda x: len(x[0]), reverse=True):
+        out = out.replace(src, dst)
+
+    # Exact/long UI phrases first.
+    phrases = PHRASE_DICT.get(lang, {})
+    for src, dst in sorted(phrases.items(), key=lambda x: len(x[0]), reverse=True):
+        out = out.replace(src, dst)
+
+    # Existing exact translations.
+    for src, dst in sorted(DICT.get(lang, {}).items(), key=lambda x: len(x[0]), reverse=True):
+        out = out.replace(src, dst)
+
+    # Word-level fallback for remaining Indonesian UI fragments.
+    merged_words = dict(WORD_DICT.get(lang, {}))
+    merged_words.update(EXTRA_DICT.get(lang, {}))
+    for src, dst in sorted(merged_words.items(), key=lambda x: len(x[0]), reverse=True):
+        out = re.sub(
+            r'(?<![A-Za-zÀ-ÿ])' + re.escape(src) + r'(?![A-Za-zÀ-ÿ])',
+            dst,
+            out,
+        )
+
+    return out

@@ -1,0 +1,341 @@
+import uuid,base64,binascii,json,logging
+from io import BytesIO
+from decimal import Decimal
+from datetime import datetime, timezone
+from uuid import UUID
+import qrcode
+from database import get_pool
+from config import BAYARGG_WEBHOOK_URL
+from utils.bayargg import BayarGG
+from utils.cashi import Cashi
+
+log=logging.getLogger(__name__)
+
+PAID_STATUSES={"paid","success","completed","settled"}
+FAILED_STATUSES={"expired","cancelled","canceled","failed"}
+
+def qr_bytes(value):
+    value=str(value or "")
+    if not value:
+        return None
+    if value.startswith("data:image/"):
+        try:return base64.b64decode(value.split(",",1)[1],validate=True)
+        except (ValueError,binascii.Error):return None
+    # Some providers return a QR payload rather than an image. Generate a
+    # PNG from the payload. HTTP image URLs are left out here because the
+    # Telegram handler can still display the payment URL as a fallback.
+    if value.startswith("http://") or value.startswith("https://"):
+        return None
+    buf=BytesIO()
+    qrcode.make(value).save(buf,format="PNG")
+    return buf.getvalue()
+
+def _parse_dt(v):
+    if not v:return None
+    if isinstance(v,datetime):return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    try:
+        d=datetime.fromisoformat(str(v).replace("Z","+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    except Exception:return None
+
+def _norm_status(v):
+    return str(v or "").strip().lower().replace("-","_").replace(" ","_")
+
+def _norm_meta(value):
+    """Normalize json/jsonb metadata from asyncpg and older deployments."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value) if value.strip() else {}
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    try:
+        return dict(value) if value else {}
+    except Exception:
+        return {}
+
+async def save_payment_message_id(invoice, message_id):
+    """Persist the Telegram QR/payment message so repeated taps never send another QR."""
+    p = await get_pool()
+    await p.execute(
+        "UPDATE purchases SET metadata = COALESCE(metadata,'{}'::jsonb) || $1::jsonb WHERE invoice_id=$2",
+        json.dumps({"payment_message_id": int(message_id)}), str(invoice)
+    )
+
+async def enabled(provider):
+    aliases={"payment_bayargg":"bayargg","payment_cashi":"cashi",
+             "payment_manual":"manual"}
+    provider=aliases.get(str(provider).lower(),str(provider).lower())
+    key={"bayargg":"payment_bayargg_enabled","cashi":"payment_cashi_enabled",
+         "manual":"payment_manual_enabled"}.get(provider)
+    if not key:return False
+    p=await get_pool()
+    value=await p.fetchval("SELECT value FROM settings WHERE key=$1",key)
+    return str(value or "off").strip().lower() in {"on","1","true","yes","enabled"}
+
+
+async def _resolve_db_user_id(conn, telegram_id):
+    """Resolve a Telegram user id to the native users.user_id type.
+    Some deployed databases use BIGINT while older Supabase schemas use UUID.
+    """
+    cols = await conn.fetch("""
+        SELECT column_name, data_type, udt_name
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='users'
+          AND column_name IN ('user_id','telegram_id')
+    """)
+    names={r['column_name']:r for r in cols}
+    if 'user_id' not in names:
+        raise RuntimeError('users.user_id column is missing')
+    uid_type=str(names['user_id']['udt_name'] or names['user_id']['data_type']).lower()
+    if 'telegram_id' in names:
+        row=await conn.fetchrow("SELECT user_id FROM users WHERE telegram_id::text=$1 LIMIT 1",str(telegram_id))
+        if row: return row['user_id']
+    if uid_type in {'uuid'}:
+        # A UUID cannot be compared directly with Telegram's numeric/text id.
+        row=await conn.fetchrow("SELECT user_id FROM users WHERE user_id::text=$1 LIMIT 1",str(telegram_id))
+        if row: return row['user_id']
+        raise RuntimeError(f'No users row mapped to Telegram ID {telegram_id}')
+    row=await conn.fetchrow("SELECT user_id FROM users WHERE user_id::text=$1 LIMIT 1",str(telegram_id))
+    if row: return row['user_id']
+    return int(telegram_id)
+
+async def _coerce_native_user_id(conn, db_uid):
+    """Return the user id in the exact Python type expected by the DB columns.
+    This avoids asyncpg binding a UUID column with a plain text value.
+    """
+    row = await conn.fetchrow("""
+        SELECT
+          (SELECT udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='user_id') AS users_type,
+          (SELECT udt_name FROM information_schema.columns WHERE table_schema='public' AND table_name='purchases' AND column_name='user_id') AS purchases_type
+    """)
+    target = str((row['purchases_type'] if row else None) or (row['users_type'] if row else None) or '').lower()
+    if target == 'uuid':
+        if isinstance(db_uid, UUID):
+            return db_uid
+        try:
+            return UUID(str(db_uid))
+        except Exception as e:
+            raise RuntimeError(f'Invalid UUID user_id: {db_uid!r}') from e
+    if target in {'int8','int4','int2'}:
+        return int(db_uid)
+    return db_uid
+
+async def _telegram_user_id(conn, db_uid):
+    cols=await conn.fetchval("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='users' AND column_name='telegram_id'")
+    if cols:
+        # Cast the DB column to text so this remains safe for UUID and BIGINT user_id schemas.
+        v=await conn.fetchval("SELECT telegram_id FROM users WHERE user_id::text=$1 LIMIT 1",str(db_uid))
+        if v is not None: return int(v)
+    try: return int(db_uid)
+    except Exception: return str(db_uid)
+
+async def create_purchase(uid,typ,qty,amount,provider,name,metadata=None):
+    provider=str(provider).lower().strip()
+    typ=str(typ).lower().strip()
+    if typ not in {"vip", "file"}:
+        return None, "unsupported_purchase_type"
+    amount=int(amount)
+    if not await enabled(provider):return None,"disabled"
+    if provider=="bayargg" and not 5000<=amount<=500000:return None,"invalid_amount"
+    if provider=="cashi":
+        try:
+            from config import CASHI_MIN_AMOUNT,CASHI_MAX_AMOUNT
+            if not int(CASHI_MIN_AMOUNT)<=amount<=int(CASHI_MAX_AMOUNT):return None,"invalid_amount"
+        except Exception:pass
+
+    metadata=dict(metadata or {})
+    metadata.setdefault("telegram_user_id", int(uid))
+    p=await get_pool()
+    async with p.acquire() as conn:
+        db_uid=await _resolve_db_user_id(conn, uid)
+        db_uid=await _coerce_native_user_id(conn, db_uid)
+
+    # Reuse a still-pending invoice. This prevents duplicate provider orders
+    # when the user taps Buy/Cek repeatedly.
+    candidates=await p.fetch("""
+        SELECT * FROM purchases
+        WHERE user_id=$1 AND purchase_type=$2 AND provider=$3 AND amount=$4
+          AND status='pending'
+        ORDER BY id DESC LIMIT 5
+    """,db_uid,typ,provider,amount)
+    for old in candidates:
+        oldmeta=_norm_meta(old["metadata"])
+        if metadata.get("code") and str(oldmeta.get("code") or "")!=str(metadata.get("code") or ""):
+            continue
+        inv=str(old["invoice_id"] or "")
+        if inv:
+            try:
+                chk=await (BayarGG.check_payment(inv) if provider=="bayargg" else Cashi.check_payment(inv))
+                st=_norm_status((chk or {}).get("status"))
+                if st in PAID_STATUSES:
+                    if await finalize_purchase(inv,(chk or {}).get("amount") or (chk or {}).get("paid_amount") or (chk or {}).get("final_amount")):
+                        continue
+                if st in FAILED_STATUSES:
+                    await p.execute("UPDATE purchases SET status=$1 WHERE id=$2 AND status='pending'",st,old["id"])
+                    continue
+            except Exception:
+                log.exception("pending payment recheck failed invoice=%s",inv)
+        return {"invoice_id":inv,"qr_string":oldmeta.get("qr_string"),
+                "payment_url":oldmeta.get("payment_url"),"amount":int(oldmeta.get("final_amount") or amount),
+                "expires_at":oldmeta.get("expires_at"),
+                "payment_message_id":oldmeta.get("payment_message_id"),
+                "reused":True},"ok"
+
+    order=f"{provider.upper()}-{uuid.uuid4().hex}"
+    desc=f"{typ}:{qty}"
+    if metadata.get("code"):desc=f"file:{metadata['code']}"
+    try:
+        if provider=="bayargg":
+            r=await BayarGG.create_payment(amount,desc,BAYARGG_WEBHOOK_URL,name)
+        else:
+            r=await Cashi.create_payment(amount,desc,name)
+    except Exception:
+        log.exception("provider create failed")
+        r=None
+    if not r:return None,"provider_error"
+
+    metadata.update({
+        "qr_string":r.get("qr_string") or r.get("qr_image"),
+        "payment_url":r.get("payment_url"),
+        "final_amount":r.get("final_amount") or r.get("amount") or amount,
+        "expires_at":(_parse_dt(r.get("expires_at")).isoformat() if _parse_dt(r.get("expires_at")) else None),
+    })
+    try:
+        await p.execute("""
+            INSERT INTO purchases(
+                user_id,purchase_type,quantity,amount,provider,order_id,invoice_id,metadata,expires_at
+            )
+            VALUES($1::BIGINT,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)
+            ON CONFLICT(invoice_id) DO NOTHING
+        """,int(db_uid),typ,qty,amount,provider,order,r["invoice_id"],json.dumps(metadata, default=str),_parse_dt(r.get("expires_at")))
+    except Exception:
+        # Some older Supabase deployments have an obsolete trigger/RLS policy
+        # on purchases that compares auth.uid() (UUID) with a text user id.
+        # The bot schema uses BIGINT Telegram IDs. Log the exact DB-side object
+        # so the deployment can identify it instead of silently creating orphan
+        # gateway invoices.
+        try:
+            diag = await p.fetch("""
+                SELECT 'trigger' AS kind, c.relname AS table_name,
+                       t.tgname AS object_name,
+                       pg_get_triggerdef(t.oid) AS definition
+                FROM pg_trigger t
+                JOIN pg_class c ON c.oid=t.tgrelid
+                WHERE c.relname='purchases' AND NOT t.tgisinternal
+                UNION ALL
+                SELECT 'policy', schemaname||'.'||tablename, policyname,
+                       coalesce(qual,'')||' | WITH CHECK: '||coalesce(with_check,'')
+                FROM pg_policies
+                WHERE schemaname='public' AND tablename='purchases'
+            """)
+            for d in diag:
+                log.error("PURCHASE DB OBJECT | kind=%s table=%s name=%s definition=%s",
+                          d["kind"], d["table_name"], d["object_name"], d["definition"])
+        except Exception:
+            log.exception("purchase DB diagnostic failed")
+        log.exception("PURCHASE INSERT FAILED | db_uid=%r type=%s provider=%s invoice=%s",
+                      db_uid, typ, provider, r.get("invoice_id"))
+        return None,"db_error"
+    return r,"ok"
+
+async def _transaction_post(bot,typ,uid,qty,amount,provider,meta=None):
+    try:
+        from config import TRANSACTION_CHAT_ID,TRANSACTION_CHANNEL_URL
+        if not TRANSACTION_CHAT_ID:return
+        label={"vip":"💎 Buy VIP","file":"📂 Buy Code"}.get(typ,typ)
+        await bot.send_message(TRANSACTION_CHAT_ID,
+            f"💳 <b>TRANSACTION SUCCESS</b>\n\n"
+            f"👤 User ID: <code>{uid}</code>\n"
+            f"📦 Type: <b>{label}</b>\n"
+            f"🔢 Quantity: <b>{qty:g}</b>\n"
+            f"💰 Amount: <b>Rp{int(amount):,}</b>\n"
+            f"🏦 Provider: <b>{provider.upper()}</b>\n"
+            f"🔗 Channel: {TRANSACTION_CHANNEL_URL}".replace(",","."),parse_mode="HTML")
+    except Exception:log.exception("transaction notify failed")
+
+async def finalize_purchase(invoice,status_amount=None):
+    p=await get_pool()
+    async with p.acquire() as c:
+        async with c.transaction():
+            row=await c.fetchrow("SELECT * FROM purchases WHERE invoice_id=$1 FOR UPDATE",str(invoice))
+            if not row:return False
+            if row["status"]=="paid":return True
+            if row["status"]!="pending":return False
+
+            expected=int(row["amount"] or 0)
+            # A successful status without a settled amount is not enough to
+            # activate VIP or unlock a paid code. This prevents status-only or
+            # malformed callbacks from granting paid access.
+            if status_amount is None:
+                log.error("PAYMENT AMOUNT MISSING invoice=%s expected=%s", invoice, expected)
+                return False
+            meta=_norm_meta(row["metadata"])
+            accepted={expected}
+            try:
+                if meta.get("final_amount") is not None:accepted.add(int(float(meta["final_amount"])))
+            except Exception:pass
+            if status_amount is not None:
+                try:
+                    actual=int(float(status_amount))
+                except (TypeError,ValueError):
+                    return False
+                # Gateway fees may make the settled amount higher, but never
+                # accept an amount below the local order amount.
+                if actual < expected:
+                    log.error("PAYMENT AMOUNT MISMATCH invoice=%s expected=%s actual=%s accepted=%s",invoice,expected,actual,accepted)
+                    return False
+
+            typ=row["purchase_type"]; db_uid=row["user_id"]; qty=row["quantity"]
+            db_uid=await _coerce_native_user_id(c, db_uid)
+            uid=await _telegram_user_id(c, db_uid)
+            # Validate file before changing status so a bad code cannot create
+            # a paid-but-undelivered transaction.
+            file_row=None
+            if typ=="file":
+                code=str(meta.get("code") or "").strip()
+                file_row=await c.fetchrow("SELECT owner_id,price_idr FROM files WHERE code=$1 AND active=TRUE FOR UPDATE",code)
+                if not file_row:return False
+                price=int(file_row["price_idr"] or expected)
+                if price!=expected:return False
+
+            await c.execute("UPDATE purchases SET status='paid',paid_at=NOW() WHERE id=$1 AND status='pending'",row["id"])
+
+            if typ in ("points", "stars"):
+                raise ValueError("Legacy point/star purchases are disabled")
+            elif typ=="vip":
+                days=int(qty)
+                await c.execute("""
+                    UPDATE users SET vip=TRUE,
+                    vip_until=GREATEST(COALESCE(vip_until,NOW()),NOW())+($1||' days')::interval,
+                    vip_plan_days=$1,
+                    vip_daily_limit=CASE
+                        WHEN $1=1 THEN 2 WHEN $1=3 THEN 4 WHEN $1=5 THEN 6
+                        WHEN $1=7 THEN 7 WHEN $1=10 THEN 10 WHEN $1=15 THEN 15
+                        WHEN $1=30 THEN 30 ELSE GREATEST($1,2) END
+                    WHERE user_id=$2
+                """,days,db_uid)
+            elif typ=="file":
+                code=str(meta.get("code") or "")
+                price=int(file_row["price_idr"] or expected)
+                await c.execute("UPDATE files SET views=views+1 WHERE code=$1",code)
+                await c.execute("UPDATE users SET total_unlocks=total_unlocks+1 WHERE user_id=$1",db_uid)
+                await c.execute("""
+                    INSERT INTO unlock_transactions(user_id,code,payment_type,amount,expires_at)
+                    VALUES($1,$2,'qr',$3,NOW()+INTERVAL '24 hours')
+                """,db_uid,code,price)
+
+    try:
+        from bot import bot
+        await _transaction_post(bot,typ,uid,float(qty),int(row["amount"]),str(row["provider"]),meta)
+        if typ=="file":
+            await bot.send_message(uid,f'✅ <b>Payment successful</b>\n\n🔑 Code: <code>{meta.get("code")}</code>\n📥 Pembayaran berhasil dan akses code sudah aktif.',parse_mode="HTML")
+        elif typ=="vip":
+            await bot.send_message(uid,f'💎 <b>VIP berhasil diaktifkan!</b>\nDurasi: <b>{int(qty)} hari</b>.',parse_mode="HTML")
+        else:
+            await bot.send_message(uid,'✅ Payment completed successfully.')
+    except Exception:
+        log.exception("post-payment notification failed")
+    return True
