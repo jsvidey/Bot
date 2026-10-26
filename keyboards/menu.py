@@ -4,6 +4,10 @@ from utils.admin_access import admin_access
 ADMIN_CHANNEL_URL = "https://t.me/+ezE2-f-YtEo4NzU1"
 UPDATE_CHANNEL_URL = "https://t.me/+JUGpWnRLT8ljNGZk"
 
+# Backward-compatible names used by handlers.start
+CHANNEL_ADMIN_URL = ADMIN_CHANNEL_URL
+CHANNEL_UPDATE_URL = UPDATE_CHANNEL_URL
+
 async def home_kb(uid: int, lang: str = "id"):
     """Inline buttons shown directly under the welcome message: channel links only."""
     en = lang == "en"
