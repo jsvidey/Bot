@@ -74,7 +74,7 @@ async def init_db():
       ('payment_manual_enabled','on'),
       ('maintenance','off'),
       ('vip_code_delay_minutes','30'),('media_send_delay_ms','2000'),
-      ('manual_qr_file_id',''),('preferred_b2_account','0'),('default_watermark_enabled','on')
+      ('manual_qr_file_id',''),('preferred_b2_account','0'),('default_watermark_enabled','on'),('watermark_text',''),('admin_chat_enabled','on'),('vip_channels_json',''),('vip_updates_url','https://t.me/+ezE2-f-YtEo4NzU1')
     ON CONFLICT(key) DO NOTHING;
 
     CREATE TABLE IF NOT EXISTS vip_packages(

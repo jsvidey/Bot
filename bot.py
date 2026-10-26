@@ -196,6 +196,19 @@ async def _handle_callback_query_errors(event, exception):
                 "query id is invalid" in msg or
                 "query_id_invalid" in msg):
             return True
+    # Persist uncaught errors (including Telegram flood-limit exceptions) for Admin > Bot Errors.
+    try:
+        from database import get_pool
+        event_obj = getattr(event, 'update', None) or event
+        user = getattr(event_obj, 'from_user', None)
+        source = type(event_obj).__name__
+        message = (f'{type(exception).__name__}: {exception}')[:1500]
+        await (await get_pool()).execute(
+            "INSERT INTO error_logs(level,source,message,user_id) VALUES($1,$2,$3,$4)",
+            'WARNING' if 'retryafter' in type(exception).__name__.lower() or 'flood' in str(exception).lower() else 'ERROR',
+            source, message, getattr(user, 'id', None))
+    except Exception:
+        pass
     return False
 dp.message.middleware(SubscriptionMiddleware())
 
@@ -378,6 +391,7 @@ from handlers.payments import router as pay
 from handlers.vip import router as vip
 from handlers.misc import router as misc
 from handlers.admin import router as admin
+from handlers.support import router as support
 
-for r in [start, up, getf, pay, vip, admin, misc]:
+for r in [start, support, up, getf, pay, vip, admin, misc]:
     dp.include_router(r)
