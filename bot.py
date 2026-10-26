@@ -2,7 +2,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.exceptions import TelegramBadRequest
 from config import BOT_TOKEN, TELEGRAM_API_BASE
 from middlewares.subscription import SubscriptionMiddleware
@@ -315,6 +315,25 @@ class ButtonLoadingMiddleware:
 
 dp.callback_query.middleware(ButtonLoadingMiddleware())
 
+class TypingIndicatorMiddleware:
+    """Show Telegram's typing indicator while private-chat handlers are processing."""
+    async def __call__(self, handler, event, data):
+        try:
+            chat_id = None
+            if isinstance(event, Message):
+                if event.chat.type == "private":
+                    chat_id = event.chat.id
+            elif isinstance(event, CallbackQuery) and event.message:
+                if getattr(event.message.chat, "type", None) == "private":
+                    chat_id = event.message.chat.id
+            if chat_id is not None:
+                await event.bot.send_chat_action(chat_id=chat_id, action="typing")
+        except Exception:
+            # Typing indicator is cosmetic; never block the actual request.
+            pass
+        return await handler(event, data)
+
+
 class MaintenanceMiddleware:
     async def __call__(self, handler, event, data):
         try:
@@ -346,6 +365,8 @@ class MaintenanceMiddleware:
             pass
         return await handler(event,data)
 
+dp.message.middleware(TypingIndicatorMiddleware())
+dp.callback_query.middleware(TypingIndicatorMiddleware())
 dp.message.middleware(MaintenanceMiddleware())
 dp.callback_query.middleware(MaintenanceMiddleware())
 
