@@ -110,6 +110,18 @@ class SubscriptionMiddleware(BaseMiddleware):
             elif isinstance(event, CallbackQuery):
                 if event.data != "verify_join" and not str(event.data or "").startswith("lang:"):
                     return await handler(event,data)
+        # Enforce admin bans for all ordinary user traffic.
+        try:
+            from database import get_pool
+            banned = await (await get_pool()).fetchval("SELECT COALESCE(banned,FALSE) FROM users WHERE user_id=$1", user.id)
+            if banned:
+                if isinstance(event, Message):
+                    await event.answer("🚫 Akun kamu diblokir dari penggunaan bot. Hubungi admin jika ini keliru.")
+                elif isinstance(event, CallbackQuery):
+                    await event.answer("Akun kamu diblokir dari penggunaan bot.", show_alert=True)
+                return None
+        except Exception:
+            pass
         if isinstance(event,Message):
             token=(event.text or "").strip().split()[0].lower() if event.text else ""
             command=token.split("@",1)[0]
