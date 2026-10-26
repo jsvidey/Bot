@@ -48,21 +48,21 @@ async def welcome_text(user, lang):
 async def show_welcome(target, user, lang, edit=False, show_channels=True):
     text = await welcome_text(user, lang)
     kb = await home_kb(user.id, lang)
-    reply_kb = await channel_reply_kb(lang)
+    reply_kb = channel_reply_kb(lang)
     if edit:
         try:
             await target.edit_text(text, parse_mode="HTML", reply_markup=kb)
-            # Reply keyboard is a separate Telegram UI and is shown below the input field.
+            # Main actions are in the persistent reply keyboard below the input field.
             if show_channels:
-                await target.answer("Pilih Channel Admin atau Channel Update dari menu bawah." if lang != "en" else "Choose Admin Channel or Updates Channel from the bottom menu.", reply_markup=reply_kb)
+                await target.answer("Pilih menu dari keyboard bawah atau kirim kode media." if lang != "en" else "Choose a menu from the bottom keyboard or send a media code.", reply_markup=reply_kb)
         except Exception:
             await target.answer(text, parse_mode="HTML", reply_markup=kb)
             if show_channels:
-                await target.answer("Pilih Channel Admin atau Channel Update dari menu bawah." if lang != "en" else "Choose Admin Channel or Updates Channel from the bottom menu.", reply_markup=reply_kb)
+                await target.answer("Pilih menu dari keyboard bawah atau kirim kode media." if lang != "en" else "Choose a menu from the bottom keyboard or send a media code.", reply_markup=reply_kb)
     else:
         await target.answer(text, parse_mode="HTML", reply_markup=kb)
         if show_channels:
-            await target.answer("Pilih Channel Admin atau Channel Update dari menu bawah." if lang != "en" else "Choose Admin Channel or Updates Channel from the bottom menu.", reply_markup=reply_kb)
+            await target.answer("Pilih menu dari keyboard bawah atau kirim kode media." if lang != "en" else "Choose a menu from the bottom keyboard or send a media code.", reply_markup=reply_kb)
 
 @router.message(F.chat.type == "private", CommandStart())
 async def start(m: Message):
@@ -125,6 +125,51 @@ async def open_updates_channel(m: Message):
             [InlineKeyboardButton(text="📢 Buka Channel Update" if lang != "en" else "📢 Open Updates Channel", url=CHANNEL_UPDATE_URL)]
         ])
     )
+
+
+
+# Reply-keyboard menu handlers: these buttons send ordinary text, not callback queries.
+@router.message(F.chat.type == "private", F.text.in_({"⭐ Review", "⭐ Review & Rating"}))
+async def reply_review(m: Message):
+    lang = await get_lang(m.from_user.id) or "id"
+    await m.bot.send_chat_action(m.chat.id, "typing")
+    await m.answer(
+        "⭐ <b>Review &amp; Rating</b>\n\nPilih Code melalui menu Code, lalu gunakan tombol Like, Hate, atau Favorite pada halaman Code." if lang == "id" else
+        "⭐ <b>Reviews &amp; Ratings</b>\n\nChoose a code from Code, then use Like, Hate, or Favorite on its code page.",
+        parse_mode="HTML"
+    )
+
+@router.message(F.chat.type == "private", F.text.in_({"📥 Buka Media", "📥 Open Media"}))
+async def reply_getfile(m: Message):
+    lang = await get_lang(m.from_user.id) or "id"
+    await m.bot.send_chat_action(m.chat.id, "typing")
+    await m.answer("📥 Kirim kode media yang ingin dibuka." if lang == "id" else "📥 Send the media code you want to open.")
+
+@router.message(F.chat.type == "private", F.text == "💎 VIP")
+async def reply_vip(m: Message):
+    from database import get_pool
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    lang = await get_lang(m.from_user.id) or "id"
+    await m.bot.send_chat_action(m.chat.id, "typing")
+    rows = await (await get_pool()).fetch("SELECT code,name,price,duration_days FROM vip_packages WHERE active ORDER BY price")
+    buttons = [[InlineKeyboardButton(text=f'💎 {r["name"]} • Rp{int(r["price"]):,}'.replace(',', '.'), callback_data=f'vip:{r["code"]}')] for r in rows]
+    if not buttons:
+        return await m.answer("Paket VIP belum tersedia. Silakan hubungi admin." if lang == "id" else "VIP packages are not available yet. Please contact the admin.")
+    await m.answer("💎 <b>BELI VIP</b>\n\nPilih paket:" if lang == "id" else "💎 <b>BUY VIP</b>\n\nChoose a package:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.message(F.chat.type == "private", F.text == "🔑 Code")
+async def reply_codes(m: Message):
+    from handlers.misc import _render_code_command
+    await m.bot.send_chat_action(m.chat.id, "typing")
+    await _render_code_command(m, "all")
+
+@router.message(F.chat.type == "private", F.text.in_({"❓ Bantuan", "❓ Help"}))
+async def reply_help(m: Message):
+    from handlers.misc import _help_pages, _help_keyboard
+    lang = await get_lang(m.from_user.id) or "id"
+    if lang not in {"id", "en"}: lang = "id"
+    await m.bot.send_chat_action(m.chat.id, "typing")
+    await m.answer(_help_pages(lang)[0], parse_mode="HTML", reply_markup=await _help_keyboard(lang, 0, m.from_user.id))
 
 @router.message(F.chat.type == "private", Command("setting"))
 async def setting(m: Message):
