@@ -77,6 +77,18 @@ async def init_db():
       ('manual_qr_file_id',''),('preferred_b2_account','0'),('default_watermark_enabled','on'),('watermark_text',''),('admin_chat_enabled','on'),('vip_channels_json',''),('vip_updates_url','https://t.me/+ezE2-f-YtEo4NzU1')
     ON CONFLICT(key) DO NOTHING;
 
+    CREATE TABLE IF NOT EXISTS server_categories(
+      server_no INT PRIMARY KEY CHECK(server_no BETWEEN 1 AND 10),
+      name TEXT NOT NULL,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO server_categories(server_no,name,enabled) VALUES
+      (1,'Media 5th ke bawah',TRUE),(2,'Media SMP',TRUE),(3,'Tante/Janda/STW',TRUE),
+      (4,'Server 4',TRUE),(5,'Server 5',TRUE),(6,'Server 6',TRUE),(7,'OmeTV',TRUE),
+      (8,'Server 8',TRUE),(9,'Server 9',TRUE),(10,'Server 10',TRUE)
+    ON CONFLICT(server_no) DO NOTHING;
+
     CREATE TABLE IF NOT EXISTS vip_packages(
       code TEXT PRIMARY KEY, name TEXT NOT NULL, price BIGINT NOT NULL,
       duration_days INT NOT NULL DEFAULT 30, active BOOLEAN NOT NULL DEFAULT TRUE
