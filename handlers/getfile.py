@@ -298,12 +298,22 @@ async def send_page(bot, chat_id, code, media, page, access_expires_at=None, per
 
     for i, item in enumerate(chunk, start + 1):
         from config import ALL_CODE_CHANNEL_URL
-        caption = (
-            f"🔑 Code: {html.escape(str(code))}\n"
-            f"📁 Media {i}/{total}\n"
-            f"🤖 Bot: @{html.escape(str(BOT_USERNAME).lstrip('@'))}\n"
-            f"📢 Channel: {html.escape(str(ALL_CODE_CHANNEL_URL))}"
-        ) if watermark_enabled else None
+        if watermark_enabled:
+            default_caption = (
+                f"🔑 Code: {html.escape(str(code))}\n"
+                f"📁 Media {i}/{total}\n"
+                f"🤖 Bot: @{html.escape(str(BOT_USERNAME).lstrip('@'))}\n"
+                f"📢 Channel: {html.escape(str(ALL_CODE_CHANNEL_URL))}"
+            )
+            custom_watermark = await pool.fetchval("SELECT value FROM settings WHERE key='watermark_text'")
+            if custom_watermark and str(custom_watermark).strip():
+                caption = html.escape(str(custom_watermark).strip())
+                caption = caption.replace('{code}', html.escape(str(code))).replace('{index}', str(i)).replace('{total}', str(total))
+                caption = caption.replace('{bot}', '@' + html.escape(str(BOT_USERNAME).lstrip('@'))).replace('{channel}', html.escape(str(ALL_CODE_CHANNEL_URL)))
+            else:
+                caption = default_caption
+        else:
+            caption = None
         delivered = False
         telegram_error = None
         b2_error = None

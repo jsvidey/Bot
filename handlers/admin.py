@@ -9,7 +9,7 @@ from config import ADMIN_IDS,OWNER_ID,PAID_CODE_MIN_IDR,PAID_CODE_MAX_IDR
 from utils.admin_access import admin_access, is_config_admin, admin_env_debug
 from utils.b2_storage import b2_pool
 from utils.callback_loading import loading
-import html,asyncio,re
+import html,asyncio,re,json
 
 router=Router()
 
@@ -55,7 +55,7 @@ async def admin_command(m):
     )
 class AdminState(StatesGroup):
     broadcast=State(); edit_code=State(); edit_title=State(); edit_tags=State(); edit_price=State(); user_action=State(); move=State(); grant_open_user=State(); grant_open_code=State(); role_user=State()
-    b2_name=State(); b2_region=State(); b2_bucket=State(); b2_key_id=State(); b2_app_key=State()
+    b2_name=State(); b2_region=State(); b2_bucket=State(); b2_key_id=State(); b2_app_key=State(); vip_channel_value=State()
     setting_value=State(); package_value=State(); package_add=State(); edit_option=State(); welcome_id=State(); welcome_en=State()
 
 def admin(uid): return is_config_admin(uid)
@@ -69,6 +69,7 @@ def kb():
   [InlineKeyboardButton(text='🔓 Buka Code untuk User',callback_data='adm:grantopen'),InlineKeyboardButton(text='👤 Atur Role User',callback_data='adm:roles')],
   [InlineKeyboardButton(text='🗄 B2 Storage',callback_data='adm:b2'),InlineKeyboardButton(text='⚙️ Bot Control',callback_data='adm:control')],
   [InlineKeyboardButton(text='📝 Pesan Sambutan Bot',callback_data='adm:welcome')],
+  [InlineKeyboardButton(text='💎 VIP Channel Links',callback_data='adm:vipchannels'),InlineKeyboardButton(text='💬 Chat Admin',callback_data='adm:chat')],
   [InlineKeyboardButton(text='🎨 Upload/Delivery Defaults',callback_data='adm:defaults')],
   [InlineKeyboardButton(text='🧾 Manual Payment',callback_data='adm:manual'),InlineKeyboardButton(text='📊 Statistics',callback_data='adm:stats')],
   [InlineKeyboardButton(text='📦 Paket VIP',callback_data='adm:packages'),InlineKeyboardButton(text='📡 Force Join',callback_data='adm:channels')],
@@ -993,8 +994,8 @@ async def admin_health(c):
 @router.callback_query(F.data=='adm:errors')
 async def errors(c):
  if not await admin_access(c.from_user.id): return
- rows=await (await get_pool()).fetch("SELECT source,message,created_at FROM error_logs ORDER BY id DESC LIMIT 20")
- text='🚨 <b>BOT ERRORS</b>\n\n'+('\n'.join(f"• {r['created_at']:%d-%m %H:%M} [{html.escape(r['source'] or '-')}] {html.escape(r['message'][:180])}" for r in rows) if rows else 'Tidak ada error.')
+ rows=await (await get_pool()).fetch("SELECT level,source,message,created_at FROM error_logs ORDER BY id DESC LIMIT 20")
+ text='🚨 <b>BOT ERRORS / FLOOD WARNINGS</b>\n\n'+('\n'.join(f"• {r['created_at']:%d-%m %H:%M} [{html.escape(r['level'] or 'ERROR')}] [{html.escape(r['source'] or '-')}] {html.escape(r['message'][:150])}" for r in rows) if rows else 'Tidak ada error atau peringatan tercatat.')
  await c.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]]))
 
 # Extended admin controls: persisted settings, subscriptions, VIP packages, transactions and user security.
@@ -1002,6 +1003,8 @@ SETTING_LABELS = {
     'media_send_delay_ms': ('Jeda antar media (ms)', 'angka 0–30000'),
     'vip_code_delay_minutes': ('Jeda VIP (menit)', 'angka 0–1440'),
     'default_watermark_enabled': ('Watermark default upload', 'on/off'),
+    'watermark_text': ('Teks watermark media', 'teks bebas; placeholder {code}, {index}, {total}, {bot}, {channel}'),
+    'vip_updates_url': ('Link channel update VIP', 'URL https://t.me/...'),
     'force_channel_id': ('ID channel wajib join 1', 'ID numerik atau 0 untuk nonaktif'),
     'force_channel_username': ('Username channel wajib join 1', '@username atau -'),
     'force_channel_url': ('URL channel wajib join 1', 'URL https://t.me/...'),
@@ -1009,6 +1012,83 @@ SETTING_LABELS = {
     'notice_sub_channel_username': ('Username channel wajib join 2', '@username atau -'),
     'notice_sub_channel_url': ('URL channel wajib join 2', 'URL https://t.me/...'),
 }
+
+@router.callback_query(F.data == 'adm:vipchannels')
+async def admin_vip_channels(c):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    from handlers.support import DEFAULT_VIP_CHANNELS, vip_channels
+    rows=await vip_channels()
+    lines=['💎 <b>VIP CHANNEL LINKS</b>','Kelola daftar channel/link yang tampil pada /channelvip.']
+    buttons=[]
+    for i,r in enumerate(rows):
+        lines.append(f"\n{i+1}. {html.escape(str(r.get('title','VIP')))}\n{html.escape(str(r.get('url','')))}")
+        buttons.append([InlineKeyboardButton(text=f'✏️ Edit {i+1}',callback_data=f'adm:vipedit:{i}'),InlineKeyboardButton(text=f'🗑 Hapus {i+1}',callback_data=f'adm:vipdel:{i}')])
+    buttons += [[InlineKeyboardButton(text='➕ Tambah Channel',callback_data='adm:vipadd')],
+        [InlineKeyboardButton(text='🔗 Edit Link Update',callback_data='admsetting:vip_updates_url')], [InlineKeyboardButton(text='♻️ Reset Default',callback_data='adm:vipreset')], [InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]]
+    await c.message.edit_text('\n'.join(lines),parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data == 'adm:vipadd')
+async def admin_vip_add(c,state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    await state.set_state(AdminState.vip_channel_value); await state.update_data(vip_channel_action='add')
+    await c.message.answer('Kirim data channel dalam 3 baris:\nJUDUL\nURL https://...\nKETERANGAN (boleh - jika kosong)')
+    await c.answer()
+
+@router.callback_query(F.data.startswith('adm:vipedit:'))
+async def admin_vip_edit(c,state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    idx=int(c.data.rsplit(':',1)[1]); from handlers.support import vip_channels
+    rows=await vip_channels()
+    if idx<0 or idx>=len(rows): return await c.answer('Channel tidak ditemukan.',show_alert=True)
+    await state.set_state(AdminState.vip_channel_value); await state.update_data(vip_channel_action='edit',vip_channel_index=idx)
+    r=rows[idx]
+    await c.message.answer('Kirim ulang dalam 3 baris:\nJUDUL\nURL https://...\nKETERANGAN (atau -)\n\nData sekarang:\n'+str(r.get('title',''))+'\n'+str(r.get('url',''))+'\n'+str(r.get('subtitle','-')))
+    await c.answer()
+
+@router.message(AdminState.vip_channel_value)
+async def admin_vip_channel_save(m,state: FSMContext):
+    if not await admin_access(m.from_user.id): await state.clear(); return
+    data=await state.get_data(); raw=(m.text or '').strip()
+    if raw.lower()=='cancel': await state.clear(); return await m.answer('Dibatalkan.')
+    parts=raw.splitlines()
+    if len(parts)<2 or not parts[0].strip() or not parts[1].strip().startswith(('https://','http://','tg://')):
+        return await m.answer('Format tidak valid. Kirim minimal 2 baris: judul dan URL yang valid. /cancel untuk batal.')
+    item={'title':parts[0].strip()[:60],'url':parts[1].strip()[:300],'subtitle':(parts[2].strip() if len(parts)>2 and parts[2].strip()!='-' else '')[:200]}
+    from handlers.support import DEFAULT_VIP_CHANNELS, vip_channels
+    rows=await vip_channels()
+    if data.get('vip_channel_action')=='edit':
+        idx=int(data.get('vip_channel_index',-1))
+        if idx<0 or idx>=len(rows): await state.clear(); return await m.answer('Channel sudah tidak ditemukan.')
+        rows[idx]=item
+    else: rows.append(item)
+    await setval('vip_channels_json',json.dumps(rows,ensure_ascii=False))
+    await state.clear()
+    await m.answer('✅ Link VIP channel berhasil disimpan.',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💎 Kelola VIP Channel',callback_data='adm:vipchannels')],[InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]]))
+
+@router.callback_query(F.data.startswith('adm:vipdel:'))
+async def admin_vip_delete(c):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    idx=int(c.data.rsplit(':',1)[1]); from handlers.support import vip_channels
+    rows=await vip_channels()
+    if idx<0 or idx>=len(rows): return await c.answer('Channel tidak ditemukan.',show_alert=True)
+    rows.pop(idx); await setval('vip_channels_json',json.dumps(rows,ensure_ascii=False)); await c.answer('Channel dihapus.'); await admin_vip_channels(c)
+
+@router.callback_query(F.data == 'adm:vipreset')
+async def admin_vip_reset(c):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    await setval('vip_channels_json',''); await c.answer('Default dipulihkan.'); await admin_vip_channels(c)
+
+@router.callback_query(F.data == 'adm:chat')
+async def admin_chat_settings(c):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    enabled=(await val('admin_chat_enabled')).lower() not in {'off','false','0','no'}
+    await c.message.edit_text('💬 <b>CHAT ADMIN</b>\n\nStatus: <b>'+('BUKA' if enabled else 'DITUTUP')+'</b>\nUser menghubungi admin dengan /msg. Balas menggunakan /reply USER_ID pesan.',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🔴 Tutup Chat' if enabled else '🟢 Buka Chat',callback_data='adm:chattoggle')],[InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]]))
+
+@router.callback_query(F.data == 'adm:chattoggle')
+async def admin_chat_toggle(c):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    old=(await val('admin_chat_enabled')).lower() not in {'off','false','0','no'}
+    await setval('admin_chat_enabled','off' if old else 'on'); await admin_chat_settings(c)
 
 @router.callback_query(F.data == 'adm:channels')
 async def admin_channels(c):
@@ -1030,10 +1110,13 @@ async def admin_defaults(c):
     delay=await p.fetchval("SELECT value FROM settings WHERE key='media_send_delay_ms'") or '2000'
     vipdelay=await p.fetchval("SELECT value FROM settings WHERE key='vip_code_delay_minutes'") or '30'
     wm=await p.fetchval("SELECT value FROM settings WHERE key='default_watermark_enabled'") or 'on'
+    wmtext=await p.fetchval("SELECT value FROM settings WHERE key='watermark_text'") or '(default)'
+    chat=await p.fetchval("SELECT value FROM settings WHERE key='admin_chat_enabled'") or 'on'
     kb=InlineKeyboardMarkup(inline_keyboard=[
       [InlineKeyboardButton(text=f'Jeda media: {delay} ms',callback_data='admsetting:media_send_delay_ms')],
       [InlineKeyboardButton(text=f'Jeda VIP: {vipdelay} menit',callback_data='admsetting:vip_code_delay_minutes')],
       [InlineKeyboardButton(text=f'Watermark default: {wm}',callback_data='admsetting:default_watermark_enabled')],
+      [InlineKeyboardButton(text='✍️ Teks watermark',callback_data='admsetting:watermark_text')],
       [InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]])
     await c.message.edit_text('🎨 <b>UPLOAD & DELIVERY DEFAULTS</b>\nPengaturan delay langsung dipakai oleh pengiriman media. Watermark default dipakai untuk upload baru.',parse_mode='HTML',reply_markup=kb)
 
@@ -1073,6 +1156,7 @@ async def admin_setting_save(m, state: FSMContext):
             if raw and not re.fullmatch(r'[A-Za-z0-9_]{5,32}',raw): return await m.answer('Username channel tidak valid.')
     elif key.endswith('_url'):
         if raw != '-' and raw and not raw.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('URL harus berupa tautan Telegram https://t.me/...')
+    if key=='watermark_text' and len(raw)>900: return await m.answer('Teks watermark maksimal 900 karakter.')
     await setval(key,raw); await state.clear()
     await m.answer(f'✅ Setting <code>{html.escape(key)}</code> diperbarui.',parse_mode='HTML')
 

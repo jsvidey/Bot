@@ -12,8 +12,8 @@ from utils.admin_access import admin_access
 router = Router()
 
 WELCOME = {
-    "id": "Halo, Jsshow yang terhormat.\n\nSelamat datang menggunakan <b>Bot Decoder</b>!\n📥 Kirim kode untuk membuka media.\n\n💎 <b>Gabung Anggota VIP &amp; dapatkan akses semua code secara gratis.</b>\n🏅 VIP 1 — Rp100.000/bulan\n🥇 VIP 2 — Rp50.000/15 hari\n🥈 VIP 3 — Rp35.000/7 hari\n🥉 VIP 4 — Rp25.000/2 hari\n\n• Sudah dapat akses semua media sesuai aturan paket\n• Paket aktif sesuai durasi dan ketentuan paket\n• Media bisa di-save &amp; share\n• Ada jaminan selama paket masih aktif\n\nJangan lupa gabung channel kami terlebih dahulu 🚀",
-    "en": "Hello, dear Jsshow user.\n\nWelcome to <b>Bot Decoder</b>!\n📥 Send a code to open its media.\n\n💎 <b>Join VIP and get access to all codes for free.</b>\n🏅 VIP 1 — Rp100,000/month\n🥇 VIP 2 — Rp50,000/15 days\n🥈 VIP 3 — Rp35,000/7 days\n🥉 VIP 4 — Rp25,000/2 days\n\n• Access media according to your package\n• Package access follows its duration and terms\n• Media can be saved and shared\n• Support is available while your package is active\n\nPlease join our channels first 🚀",
+    "id": "👋 Halo, {name}!\n\n📥 Kirim kode media untuk mulai.\n💎 Ketik /channelvip untuk melihat akses VIP.\n💬 Ketik /msg untuk chat admin.",
+    "en": "👋 Hello, {name}!\n\n📥 Send a media code to get started.\n💎 Use /channelvip to view VIP access.\n💬 Use /msg to chat with an admin.",
 }
 
 def language_kb():
@@ -49,20 +49,27 @@ async def show_welcome(target, user, lang, edit=False, show_channels=True):
     text = await welcome_text(user, lang)
     kb = await home_kb(user.id, lang)
     reply_kb = channel_reply_kb(lang)
+    sent = None
     if edit:
         try:
             await target.edit_text(text, parse_mode="HTML", reply_markup=kb)
-            # Main actions are in the persistent reply keyboard below the input field.
-            if show_channels:
-                await target.answer("Pilih menu dari keyboard bawah atau kirim kode media." if lang != "en" else "Choose a menu from the bottom keyboard or send a media code.", reply_markup=reply_kb)
+            sent = target
         except Exception:
-            await target.answer(text, parse_mode="HTML", reply_markup=kb)
-            if show_channels:
-                await target.answer("Pilih menu dari keyboard bawah atau kirim kode media." if lang != "en" else "Choose a menu from the bottom keyboard or send a media code.", reply_markup=reply_kb)
+            sent = await target.answer(text, parse_mode="HTML", reply_markup=kb)
     else:
-        await target.answer(text, parse_mode="HTML", reply_markup=kb)
-        if show_channels:
-            await target.answer("Pilih menu dari keyboard bawah atau kirim kode media." if lang != "en" else "Choose a menu from the bottom keyboard or send a media code.", reply_markup=reply_kb)
+        sent = await target.answer(text, parse_mode="HTML", reply_markup=kb)
+    if show_channels:
+        try:
+            await target.bot.send_message(user.id, "⬇️ Menu" if lang == "id" else "⬇️ Menu", reply_markup=reply_kb)
+        except Exception:
+            pass
+    # Pin the welcome message where Telegram allows it; failure is non-fatal.
+    try:
+        msg = sent if isinstance(sent, Message) else getattr(target, "message", None)
+        if msg:
+            await target.bot.pin_chat_message(chat_id=user.id, message_id=msg.message_id, disable_notification=True)
+    except Exception:
+        pass
 
 @router.message(F.chat.type == "private", CommandStart())
 async def start(m: Message):
