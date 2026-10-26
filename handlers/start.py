@@ -2,7 +2,7 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_pool
-from keyboards.menu import home_kb
+from keyboards.menu import home_kb, bottom_menu_kb
 from utils.economy import ensure_user
 from middlewares.subscription import subscription_prompt
 from utils.callback_loading import loading
@@ -32,7 +32,17 @@ async def language_prompt(target, edit=False):
 async def welcome_text(user, lang):
     name = user.full_name or user.username or str(user.id)
     import html
-    return WELCOME.get(lang, WELCOME["id"]).format(name=html.escape(name))
+    # Welcome message can be edited by an authorized admin and is persisted in DB.
+    try:
+        p = await get_pool()
+        custom = await p.fetchval("SELECT value FROM settings WHERE key=$1", f"welcome_message_{lang}")
+    except Exception:
+        custom = None
+    template = custom or WELCOME.get(lang, WELCOME["id"])
+    try:
+        return template.format(name=html.escape(name))
+    except (KeyError, ValueError):
+        return template
 
 async def show_welcome(target, user, lang, edit=False):
     text = await welcome_text(user, lang)
@@ -42,8 +52,11 @@ async def show_welcome(target, user, lang, edit=False):
             await target.edit_text(text, parse_mode="HTML", reply_markup=kb)
         except Exception:
             await target.answer(text, parse_mode="HTML", reply_markup=kb)
+        # Reply keyboard is a separate Telegram UI layer from the inline buttons.
+        await target.bot.send_message(target.chat.id, "👇 Pilih menu di bawah / Choose a menu below:", reply_markup=bottom_menu_kb(lang))
     else:
         await target.answer(text, parse_mode="HTML", reply_markup=kb)
+        await target.answer("👇 Pilih menu di bawah / Choose a menu below:", reply_markup=bottom_menu_kb(lang))
 
 @router.message(F.chat.type == "private", CommandStart())
 async def start(m: Message):
@@ -84,6 +97,35 @@ async def choose_language(c: CallbackQuery):
         from handlers.getfile import show
         return await show(c.message, pending)
     await show_welcome(c.message, c.from_user, lang, edit=True)
+
+
+@router.message(F.chat.type == "private", F.text.in_({"📥 Kirim Kode", "📥 Send Code"}))
+async def menu_send_code(m: Message):
+    lang = await get_lang(m.from_user.id) or "id"
+    await m.answer("📥 Silakan kirim kode media yang ingin dibuka." if lang == "id" else "📥 Please send the media code you want to open.", reply_markup=bottom_menu_kb(lang))
+
+@router.message(F.chat.type == "private", F.text.in_({"💎 Paket VIP", "💎 VIP Packages"}))
+async def menu_vip_packages(m: Message):
+    lang = await get_lang(m.from_user.id) or "id"
+    rows = await (await get_pool()).fetch("SELECT code,name,price,duration_days FROM vip_packages WHERE active ORDER BY price")
+    buttons = []
+    for r in rows:
+        days = int(r["duration_days"] or 0)
+        tier = {30: 1, 15: 2, 7: 3, 2: 4}.get(days)
+        label = f"VIP {tier} • {days} {'Hari' if lang == 'id' else 'Days'}" if tier else str(r["name"] or "VIP")
+        buttons.append([InlineKeyboardButton(text=f"💎 {label} • Rp{int(r['price']):,}".replace(",", "."), callback_data=f"vip:{r['code']}")])
+    if not buttons:
+        return await m.answer("Paket VIP belum tersedia." if lang == "id" else "No VIP packages are available yet.", reply_markup=bottom_menu_kb(lang))
+    await m.answer("💎 <b>Pilih Paket VIP</b>" if lang == "id" else "💎 <b>Choose a VIP package</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.message(F.chat.type == "private", F.text.in_({"🌐 Bahasa / Language"}))
+async def menu_language(m: Message):
+    await language_prompt(m)
+
+@router.message(F.chat.type == "private", F.text.in_({"🏠 Beranda", "🏠 Home"}))
+async def menu_home(m: Message):
+    lang = await get_lang(m.from_user.id) or "id"
+    await show_welcome(m, m.from_user, lang)
 
 @router.message(F.chat.type == "private", Command("setting"))
 async def setting(m: Message):
