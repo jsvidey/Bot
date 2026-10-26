@@ -2,7 +2,7 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_pool
-from keyboards.menu import home_kb, bottom_menu_kb
+from keyboards.menu import home_kb, channel_reply_kb, CHANNEL_ADMIN_URL, CHANNEL_UPDATE_URL
 from utils.economy import ensure_user
 from middlewares.subscription import subscription_prompt
 from utils.callback_loading import loading
@@ -12,8 +12,8 @@ from utils.admin_access import admin_access
 router = Router()
 
 WELCOME = {
-    "id": "Halo, {name} yang terhormat.\n\nSelamat datang menggunakan <b>Bot Decoder</b>!\n📥 Kirim kode untuk membuka media.\n\n💎 <b>Gabung Anggota VIP &amp; dapatkan akses semua code secara gratis.</b>\n🏅 VIP 1 — Rp100.000/bulan\n🥇 VIP 2 — Rp50.000/15 hari\n🥈 VIP 3 — Rp35.000/7 hari\n🥉 VIP 4 — Rp25.000/2 hari\n\n• Sudah dapat akses semua media sesuai aturan paket\n• Paket aktif sesuai durasi dan ketentuan paket\n• Media bisa di-save &amp; share\n• Ada jaminan selama paket masih aktif\n\nJangan lupa gabung channel kami terlebih dahulu 🚀",
-    "en": "Hello, dear {name}.\n\nWelcome to <b>Bot Decoder</b>!\n📥 Send a code to open its media.\n\n💎 <b>Join VIP and get access to all codes for free.</b>\n🏅 VIP 1 — Rp100,000/month\n🥇 VIP 2 — Rp50,000/15 days\n🥈 VIP 3 — Rp35,000/7 days\n🥉 VIP 4 — Rp25,000/2 days\n\n• Access media according to your package rules\n• Package access follows its duration and terms\n• Media can be saved and shared\n• Support is available while your package is active\n\nPlease join our channels first 🚀",
+    "id": "Halo, Jsshow yang terhormat.\n\nSelamat datang menggunakan <b>Bot Decoder</b>!\n📥 Kirim kode untuk membuka media.\n\n💎 <b>Gabung Anggota VIP &amp; dapatkan akses semua code secara gratis.</b>\n🏅 VIP 1 — Rp100.000/bulan\n🥇 VIP 2 — Rp50.000/15 hari\n🥈 VIP 3 — Rp35.000/7 hari\n🥉 VIP 4 — Rp25.000/2 hari\n\n• Sudah dapat akses semua media sesuai aturan paket\n• Paket aktif sesuai durasi dan ketentuan paket\n• Media bisa di-save &amp; share\n• Ada jaminan selama paket masih aktif\n\nJangan lupa gabung channel kami terlebih dahulu 🚀",
+    "en": "Hello, dear Jsshow user.\n\nWelcome to <b>Bot Decoder</b>!\n📥 Send a code to open its media.\n\n💎 <b>Join VIP and get access to all codes for free.</b>\n🏅 VIP 1 — Rp100,000/month\n🥇 VIP 2 — Rp50,000/15 days\n🥈 VIP 3 — Rp35,000/7 days\n🥉 VIP 4 — Rp25,000/2 days\n\n• Access media according to your package\n• Package access follows its duration and terms\n• Media can be saved and shared\n• Support is available while your package is active\n\nPlease join our channels first 🚀",
 }
 
 def language_kb():
@@ -30,33 +30,39 @@ async def language_prompt(target, edit=False):
         await target.answer(text, parse_mode="HTML", reply_markup=language_kb())
 
 async def welcome_text(user, lang):
-    name = user.full_name or user.username or str(user.id)
+    # Admin can customize each language from /admin -> Pesan Sambutan.
+    # The built-in message remains the fallback for fresh installs.
+    p = await get_pool()
+    key = "welcome_text_en" if lang == "en" else "welcome_text_id"
+    custom = await p.fetchval("SELECT value FROM settings WHERE key=$1", key)
+    # Custom messages are plain text so symbols like &, < and > cannot break HTML parsing.
+    # Built-in defaults may use Telegram HTML formatting.
     import html
-    # Welcome message can be edited by an authorized admin and is persisted in DB.
-    try:
-        p = await get_pool()
-        custom = await p.fetchval("SELECT value FROM settings WHERE key=$1", f"welcome_message_{lang}")
-    except Exception:
-        custom = None
-    template = custom or WELCOME.get(lang, WELCOME["id"])
-    try:
-        return template.format(name=html.escape(name))
-    except (KeyError, ValueError):
-        return template
+    is_custom = bool(custom and str(custom).strip())
+    template = str(custom).strip() if is_custom else WELCOME.get(lang, WELCOME["id"])
+    if is_custom:
+        template = html.escape(template)
+    name = html.escape(user.full_name or user.username or str(user.id))
+    return template.replace("{name}", name)
 
-async def show_welcome(target, user, lang, edit=False):
+async def show_welcome(target, user, lang, edit=False, show_channels=True):
     text = await welcome_text(user, lang)
     kb = await home_kb(user.id, lang)
+    reply_kb = await channel_reply_kb(lang)
     if edit:
         try:
             await target.edit_text(text, parse_mode="HTML", reply_markup=kb)
+            # Reply keyboard is a separate Telegram UI and is shown below the input field.
+            if show_channels:
+                await target.answer("Pilih Channel Admin atau Channel Update dari menu bawah." if lang != "en" else "Choose Admin Channel or Updates Channel from the bottom menu.", reply_markup=reply_kb)
         except Exception:
             await target.answer(text, parse_mode="HTML", reply_markup=kb)
-        # Reply keyboard is a separate Telegram UI layer from the inline buttons.
-        await target.bot.send_message(target.chat.id, "👇 Pilih menu di bawah / Choose a menu below:", reply_markup=bottom_menu_kb(lang))
+            if show_channels:
+                await target.answer("Pilih Channel Admin atau Channel Update dari menu bawah." if lang != "en" else "Choose Admin Channel or Updates Channel from the bottom menu.", reply_markup=reply_kb)
     else:
         await target.answer(text, parse_mode="HTML", reply_markup=kb)
-        await target.answer("👇 Pilih menu di bawah / Choose a menu below:", reply_markup=bottom_menu_kb(lang))
+        if show_channels:
+            await target.answer("Pilih Channel Admin atau Channel Update dari menu bawah." if lang != "en" else "Choose Admin Channel or Updates Channel from the bottom menu.", reply_markup=reply_kb)
 
 @router.message(F.chat.type == "private", CommandStart())
 async def start(m: Message):
@@ -98,34 +104,27 @@ async def choose_language(c: CallbackQuery):
         return await show(c.message, pending)
     await show_welcome(c.message, c.from_user, lang, edit=True)
 
-
-@router.message(F.chat.type == "private", F.text.in_({"📥 Kirim Kode", "📥 Send Code"}))
-async def menu_send_code(m: Message):
+@router.message(F.chat.type == "private", F.text.in_({"📣 Channel Admin", "📣 Admin Channel"}))
+async def open_admin_channel(m: Message):
     lang = await get_lang(m.from_user.id) or "id"
-    await m.answer("📥 Silakan kirim kode media yang ingin dibuka." if lang == "id" else "📥 Please send the media code you want to open.", reply_markup=bottom_menu_kb(lang))
+    await m.answer(
+        ("📣 <b>Channel Admin</b>\\nTekan tautan untuk membuka channel admin." if lang != "en" else "📣 <b>Admin Channel</b>\\nTap the link to open the admin channel."),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📣 Buka Channel Admin" if lang != "en" else "📣 Open Admin Channel", url=CHANNEL_ADMIN_URL)]
+        ])
+    )
 
-@router.message(F.chat.type == "private", F.text.in_({"💎 Paket VIP", "💎 VIP Packages"}))
-async def menu_vip_packages(m: Message):
+@router.message(F.chat.type == "private", F.text.in_({"📢 Channel Update", "📢 Updates Channel"}))
+async def open_updates_channel(m: Message):
     lang = await get_lang(m.from_user.id) or "id"
-    rows = await (await get_pool()).fetch("SELECT code,name,price,duration_days FROM vip_packages WHERE active ORDER BY price")
-    buttons = []
-    for r in rows:
-        days = int(r["duration_days"] or 0)
-        tier = {30: 1, 15: 2, 7: 3, 2: 4}.get(days)
-        label = f"VIP {tier} • {days} {'Hari' if lang == 'id' else 'Days'}" if tier else str(r["name"] or "VIP")
-        buttons.append([InlineKeyboardButton(text=f"💎 {label} • Rp{int(r['price']):,}".replace(",", "."), callback_data=f"vip:{r['code']}")])
-    if not buttons:
-        return await m.answer("Paket VIP belum tersedia." if lang == "id" else "No VIP packages are available yet.", reply_markup=bottom_menu_kb(lang))
-    await m.answer("💎 <b>Pilih Paket VIP</b>" if lang == "id" else "💎 <b>Choose a VIP package</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-@router.message(F.chat.type == "private", F.text.in_({"🌐 Bahasa / Language"}))
-async def menu_language(m: Message):
-    await language_prompt(m)
-
-@router.message(F.chat.type == "private", F.text.in_({"🏠 Beranda", "🏠 Home"}))
-async def menu_home(m: Message):
-    lang = await get_lang(m.from_user.id) or "id"
-    await show_welcome(m, m.from_user, lang)
+    await m.answer(
+        ("📢 <b>Channel Update</b>\\nTekan tautan untuk membuka channel update." if lang != "en" else "📢 <b>Updates Channel</b>\\nTap the link to open the updates channel."),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📢 Buka Channel Update" if lang != "en" else "📢 Open Updates Channel", url=CHANNEL_UPDATE_URL)]
+        ])
+    )
 
 @router.message(F.chat.type == "private", Command("setting"))
 async def setting(m: Message):
@@ -144,7 +143,7 @@ async def change_language(c: CallbackQuery):
 async def home(c: CallbackQuery):
     await loading(c)
     await ensure_user(c.from_user.id, c.from_user.username, c.from_user.full_name)
-    await show_welcome(c.message, c.from_user, await get_lang(c.from_user.id) or "id", edit=True)
+    await show_welcome(c.message, c.from_user, await get_lang(c.from_user.id) or "id", edit=True, show_channels=False)
 
 @router.callback_query(F.data == "verify_join")
 async def verify_join(c: CallbackQuery):

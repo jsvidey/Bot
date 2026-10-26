@@ -56,7 +56,7 @@ async def admin_command(m):
 class AdminState(StatesGroup):
     broadcast=State(); edit_code=State(); edit_title=State(); edit_tags=State(); edit_price=State(); user_action=State(); move=State(); grant_open_user=State(); grant_open_code=State(); role_user=State()
     b2_name=State(); b2_region=State(); b2_bucket=State(); b2_key_id=State(); b2_app_key=State()
-    setting_value=State(); package_value=State(); package_add=State(); edit_option=State(); welcome_text=State()
+    setting_value=State(); package_value=State(); package_add=State(); edit_option=State(); welcome_id=State(); welcome_en=State()
 
 def admin(uid): return is_config_admin(uid)
 async def val(key): return str(await (await get_pool()).fetchval("SELECT value FROM settings WHERE key=$1",key) or "off")
@@ -68,8 +68,8 @@ def kb():
   [InlineKeyboardButton(text='🗂 Code',callback_data='adm:codes'),InlineKeyboardButton(text='👥 Users',callback_data='adm:users')],
   [InlineKeyboardButton(text='🔓 Buka Code untuk User',callback_data='adm:grantopen'),InlineKeyboardButton(text='👤 Atur Role User',callback_data='adm:roles')],
   [InlineKeyboardButton(text='🗄 B2 Storage',callback_data='adm:b2'),InlineKeyboardButton(text='⚙️ Bot Control',callback_data='adm:control')],
+  [InlineKeyboardButton(text='📝 Pesan Sambutan Bot',callback_data='adm:welcome')],
   [InlineKeyboardButton(text='🎨 Upload/Delivery Defaults',callback_data='adm:defaults')],
-  [InlineKeyboardButton(text='✍️ Pesan Sambutan Bot',callback_data='adm:welcome')],
   [InlineKeyboardButton(text='🧾 Manual Payment',callback_data='adm:manual'),InlineKeyboardButton(text='📊 Statistics',callback_data='adm:stats')],
   [InlineKeyboardButton(text='📦 Paket VIP',callback_data='adm:packages'),InlineKeyboardButton(text='📡 Force Join',callback_data='adm:channels')],
   [InlineKeyboardButton(text='🧾 Transaksi',callback_data='adm:transactions'),InlineKeyboardButton(text='🔐 User Security',callback_data='adm:security')],
@@ -95,6 +95,111 @@ async def panel(m):
 async def refresh(c):
  if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
  await c.message.edit_text(await panel_text(),parse_mode='HTML',reply_markup=kb())
+
+@router.callback_query(F.data=='adm:welcome')
+async def welcome_settings(c):
+    if not await admin_access(c.from_user.id):
+        return await c.answer('No access', show_alert=True)
+    id_text = await val('welcome_text_id')
+    en_text = await val('welcome_text_en')
+    rows = [
+        [InlineKeyboardButton(text='🇮🇩 Edit Bahasa Indonesia', callback_data='admwelcome:edit:id')],
+        [InlineKeyboardButton(text='🇬🇧 Edit English', callback_data='admwelcome:edit:en')],
+        [InlineKeyboardButton(text='♻️ Reset ke Pesan Default', callback_data='admwelcome:reset')],
+        [InlineKeyboardButton(text='🔙 Panel Admin', callback_data='adm:panel')],
+    ]
+    await c.message.edit_text(
+        '📝 <b>PENGATURAN PESAN SAMBUTAN</b>\n\n'
+        'Pilih bahasa untuk mengedit pesan yang tampil saat pengguna mengirim /start. '
+        'Tombol menu di bawah pesan tetap menggunakan inline keyboard.\n\n'
+        f'🇮🇩 Indonesia: <b>{"Kustom" if id_text else "Default"}</b>\n'
+        f'🇬🇧 English: <b>{"Custom" if en_text else "Default"}</b>\n\n'
+        'Kirim seluruh teks sambutan dalam satu pesan. Teks biasa dan emoji didukung; format HTML tidak diperlukan. '
+        'Placeholder <code>{name}</code> opsional.',
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+    )
+
+@router.callback_query(F.data.startswith('admwelcome:edit:'))
+async def edit_welcome_start(c, state: FSMContext):
+    if not await admin_access(c.from_user.id):
+        return await c.answer('No access', show_alert=True)
+    lang = c.data.rsplit(':', 1)[-1]
+    if lang not in {'id', 'en'}:
+        return await c.answer('Bahasa tidak valid.', show_alert=True)
+    await state.set_state(AdminState.welcome_id if lang == 'id' else AdminState.welcome_en)
+    await c.answer()
+    prompt = (
+        '🇮🇩 Kirim teks sambutan Bahasa Indonesia yang baru dalam satu pesan. '
+        'Pesan ini akan dipakai saat pengguna mengirim /start.'
+        if lang == 'id' else
+        '🇬🇧 Send the new English welcome message in one message. It will be used when users send /start.'
+    )
+    await c.message.answer(
+        prompt + '\n\nKetik /cancel untuk membatalkan. Placeholder opsional: <code>{name}</code>.',
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='❌ Batal / Cancel', callback_data='admwelcome:cancel')]
+        ])
+    )
+
+@router.callback_query(F.data == 'admwelcome:cancel')
+async def cancel_welcome_edit(c, state: FSMContext):
+    if not await admin_access(c.from_user.id):
+        return await c.answer('No access', show_alert=True)
+    await state.clear()
+    await c.answer('Dibatalkan.')
+    await c.message.answer('Pengeditan pesan sambutan dibatalkan.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='📝 Pengaturan Pesan Sambutan', callback_data='adm:welcome')],
+        [InlineKeyboardButton(text='🔙 Panel Admin', callback_data='adm:panel')]
+    ]))
+
+@router.callback_query(F.data == 'admwelcome:reset')
+async def reset_welcome(c):
+    if not await admin_access(c.from_user.id):
+        return await c.answer('No access', show_alert=True)
+    p = await get_pool()
+    await p.execute("DELETE FROM settings WHERE key IN ('welcome_text_id','welcome_text_en')")
+    await c.answer('Pesan default dipulihkan.')
+    await welcome_settings(c)
+
+@router.message(AdminState.welcome_id)
+async def save_welcome_id(m: Message, state: FSMContext):
+    if not await admin_access(m.from_user.id):
+        return
+    text = (m.text or '').strip()
+    if text.lower() == '/cancel':
+        await state.clear()
+        return await m.answer('Pengeditan dibatalkan.')
+    if not text:
+        return await m.answer('Teks tidak boleh kosong. Kirim teks sambutan atau /cancel.')
+    if len(text) > 3500:
+        return await m.answer('Teks terlalu panjang. Maksimal 3500 karakter.')
+    await setval('welcome_text_id', text)
+    await state.clear()
+    await m.answer('✅ Pesan sambutan Bahasa Indonesia berhasil disimpan.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='👁 Pratinjau / Pengaturan', callback_data='adm:welcome')],
+        [InlineKeyboardButton(text='🔙 Panel Admin', callback_data='adm:panel')]
+    ]))
+
+@router.message(AdminState.welcome_en)
+async def save_welcome_en(m: Message, state: FSMContext):
+    if not await admin_access(m.from_user.id):
+        return
+    text = (m.text or '').strip()
+    if text.lower() == '/cancel':
+        await state.clear()
+        return await m.answer('Editing cancelled.')
+    if not text:
+        return await m.answer('Text cannot be empty. Send the welcome message or /cancel.')
+    if len(text) > 3500:
+        return await m.answer('Text is too long. Maximum 3500 characters.')
+    await setval('welcome_text_en', text)
+    await state.clear()
+    await m.answer('✅ English welcome message saved.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='👁 Preview / Settings', callback_data='adm:welcome')],
+        [InlineKeyboardButton(text='🔙 Admin Panel', callback_data='adm:panel')]
+    ]))
 
 @router.callback_query(F.data=='adm:payments')
 async def payments(c):
@@ -891,49 +996,6 @@ async def errors(c):
  rows=await (await get_pool()).fetch("SELECT source,message,created_at FROM error_logs ORDER BY id DESC LIMIT 20")
  text='🚨 <b>BOT ERRORS</b>\n\n'+('\n'.join(f"• {r['created_at']:%d-%m %H:%M} [{html.escape(r['source'] or '-')}] {html.escape(r['message'][:180])}" for r in rows) if rows else 'Tidak ada error.')
  await c.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]]))
-
-# Admin-editable /start welcome messages (stored in PostgreSQL settings).
-@router.callback_query(F.data == 'adm:welcome')
-async def admin_welcome_menu(c):
-    if not await admin_access(c.from_user.id): return await c.answer('No access', show_alert=True)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='🇮🇩 Edit Bahasa Indonesia', callback_data='admwelcome:id')],
-        [InlineKeyboardButton(text='🇬🇧 Edit English', callback_data='admwelcome:en')],
-        [InlineKeyboardButton(text='🔙 Panel Admin', callback_data='adm:panel')],
-    ])
-    await c.message.edit_text('✍️ <b>PESAN SAMBUTAN BOT</b>\n\nPilih bahasa yang ingin diedit. Pesan ini akan ditampilkan saat pengguna menekan /start. Tombol menu pengguna tetap menggunakan inline keyboard.', parse_mode='HTML', reply_markup=kb)
-    await c.answer()
-
-@router.callback_query(F.data.startswith('admwelcome:'))
-async def admin_welcome_edit(c, state: FSMContext):
-    if not await admin_access(c.from_user.id): return await c.answer('No access', show_alert=True)
-    lang = c.data.split(':', 1)[1]
-    if lang not in {'id', 'en'}: return await c.answer('Bahasa tidak valid.', show_alert=True)
-    current = await val(f'welcome_message_{lang}')
-    if current == 'off':
-        from handlers.start import WELCOME
-        current = WELCOME[lang]
-    await state.set_state(AdminState.welcome_text)
-    await state.update_data(welcome_lang=lang)
-    await c.message.answer(
-        ('Kirim teks sambutan baru dalam Bahasa Indonesia.' if lang == 'id' else 'Send the new English welcome message.') +
-        '\n\nBisa gunakan <code>{name}</code> untuk nama pengguna dan format HTML Telegram seperti <code>&lt;b&gt;teks&lt;/b&gt;</code>.\nKirim <code>cancel</code> untuk batal.\n\n<b>Pesan saat ini:</b>\n' + html.escape(current[:2500]),
-        parse_mode='HTML')
-    await c.answer()
-
-@router.message(AdminState.welcome_text)
-async def admin_welcome_save(m, state: FSMContext):
-    if not await admin_access(m.from_user.id): await state.clear(); return
-    raw = (m.text or '').strip()
-    if raw.lower() == 'cancel':
-        await state.clear(); return await m.answer('Pengeditan pesan sambutan dibatalkan.')
-    if not raw: return await m.answer('Pesan tidak boleh kosong. Kirim teks atau cancel.')
-    if len(raw) > 3500: return await m.answer('Pesan terlalu panjang. Maksimal 3500 karakter.')
-    data = await state.get_data(); lang = data.get('welcome_lang')
-    if lang not in {'id', 'en'}: await state.clear(); return await m.answer('Sesi bahasa tidak valid. Coba lagi dari /admin.')
-    await setval(f'welcome_message_{lang}', raw)
-    await state.clear()
-    await m.answer('✅ Pesan sambutan berhasil disimpan. Pesan baru akan digunakan saat pengguna menekan /start.\n\nCatatan: jika menggunakan tag HTML, pastikan tag valid.')
 
 # Extended admin controls: persisted settings, subscriptions, VIP packages, transactions and user security.
 SETTING_LABELS = {
