@@ -151,8 +151,14 @@ async def show(m,code):
             preview_items=[]
         preview=preview_items[0] if preview_items else None
         if preview:
-            # Prefer B2 for small files, then fall back to the stored Telegram file_id.
             try:
+                if len(preview_items)==1 and preview.get('type')=='video':
+                    await m.bot.send_video(m.chat.id,preview['telegram_file_id'],caption=caption,parse_mode='HTML',reply_markup=kb)
+                    return
+                if preview_items and all(x.get('type')=='photo' for x in preview_items):
+                    from aiogram.types import InputMediaPhoto
+                    await m.bot.send_media_group(m.chat.id,media=[InputMediaPhoto(media=x['telegram_file_id']) for x in preview_items[:5]])
+                    return await m.answer(caption,parse_mode='HTML',reply_markup=kb)
                 if preview.get('drive_account') is not None and preview.get('drive_file_id'):
                     await deliver_one(m.bot,m.chat.id,preview,caption=caption,reply_markup=kb)
                 else:
@@ -160,16 +166,25 @@ async def show(m,code):
                 return
             except Exception as preview_error:
                 try:
-                    await deliver_telegram_file_id(m.bot,m.chat.id,preview,caption=caption,reply_markup=kb)
-                    return
+                    await notify(m.bot, f"⚠️ <b>Review preview gagal dikirim</b>\\nCode: <code>{html.escape(review_code)}</code>\\nError: <code>{html.escape(str(preview_error)[:400])}</code>")
                 except Exception:
-                    try:
-                        await notify(m.bot, f"⚠️ <b>Review preview gagal dikirim</b>\nCode: <code>{html.escape(review_code)}</code>\nError: <code>{html.escape(str(preview_error)[:400])}</code>")
-                    except Exception:
-                        pass
+                    pass
         # Text fallback keeps the review information and buttons available even
         # when the preview image has been deleted or cannot be fetched.
         return await m.answer(caption,parse_mode='HTML',reply_markup=kb)
+    # Show the separately uploaded preview whenever a user opens the media code.
+    try:
+        raw_preview=f.get('review_media') if hasattr(f,'get') else f['review_media']
+        preview_items=raw_preview if isinstance(raw_preview,list) else json.loads(raw_preview or '[]')
+    except Exception:
+        preview_items=[]
+    try:
+        if len(preview_items)==1 and preview_items[0].get('type')=='video':
+            await m.bot.send_video(m.chat.id,preview_items[0]['telegram_file_id'],caption=f"🎬 Preview • {html.escape(f['title'] or 'Untitled')}",parse_mode='HTML')
+        elif preview_items and all(x.get('type')=='photo' for x in preview_items):
+            await m.bot.send_media_group(m.chat.id,media=[InputMediaPhoto(media=x['telegram_file_id']) for x in preview_items[:5]])
+    except Exception:
+        pass
     await m.answer(
       f"📦 <b>{html.escape(f['title'] or 'Untitled')}</b>\n\n"
       f"🔑 <code>{html.escape(canonical)}</code>\n{paid}\n"

@@ -14,7 +14,7 @@ from utils.admin_access import admin_access
 router=Router()
 _LOCKS={}
 class U(StatesGroup):
-    media=State(); title=State(); tags=State(); price=State(); server=State(); access=State(); auto_delete=State(); forward=State(); watermark=State()
+    media=State(); title=State(); tags=State(); price=State(); server=State(); access=State(); auto_delete=State(); forward=State(); watermark=State(); preview=State()
 
 def rnd(n=14): return ''.join(secrets.choice('123456789XxYy') for _ in range(n))
 
@@ -354,8 +354,11 @@ async def tags(m,state):
         parse_mode='HTML')
 
 
-async def create_code(m,state,price:int):
+async def create_code(m,state,price:int, uid=None, username=None, full_name=None):
     d=await state.get_data()
+    uid = int(uid or m.from_user.id)
+    username = username if username is not None else getattr(m.from_user, "username", None)
+    full_name = full_name if full_name is not None else getattr(m.from_user, "full_name", "")
     media=d.get('media',[])
     title=d.get('title','Untitled')
     tags=d.get('tags',[])
@@ -377,8 +380,8 @@ async def create_code(m,state,price:int):
         VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET
         username=COALESCE(EXCLUDED.username,users.username),
         full_name=COALESCE(EXCLUDED.full_name,users.full_name)""",
-        m.from_user.id, m.from_user.username,
-        (m.from_user.full_name or '').strip()[:200])
+        uid, username,
+        (full_name or '').strip()[:200])
     # Critical: previously the handler generated a code but never persisted its
     # media record, so Getfile could not resolve the generated code.
     server_name=d.get('server_name','Server 1 — Media 5th ke bawah')
@@ -386,25 +389,22 @@ async def create_code(m,state,price:int):
     auto_delete=bool(d.get('auto_delete',False))
     allow_forward=bool(d.get('allow_forward',True))
     watermark_enabled=bool(d.get('watermark_enabled', str(await p.fetchval("SELECT value FROM settings WHERE key='default_watermark_enabled'") or 'on').lower() == 'on'))
-    # The first photo is the intentionally free review/preview. If no photo was
-    # uploaded, use the first item as a fallback preview (video/document/audio).
-    # The full media list remains the purchased content; the preview is shown only
-    # through the review-code flow, which is the intended free review feature.
-    review_preview = next((item for item in media if item.get('type') == 'photo'), None)
-    if review_preview is None and media:
-        review_preview = media[0]
-    review_items = [review_preview] if review_preview else []
+    # Preview is supplied separately at the end of upload. Never expose paid
+    # media as a free preview by automatically reusing the full media list.
+    review_items = list(d.get('preview_media', []))[:5]
+    if any(x.get('type') == 'video' for x in review_items):
+        review_items = review_items[:1]
     await p.execute("""INSERT INTO files
         (code,review_code,code_type,owner_id,title,media,review_media,media_count,photo_count,video_count,document_count,audio_count,
          code_value_idr,price_idr,tags,server_name,access_mode,auto_delete,allow_forward,watermark_enabled,active)
         VALUES($1,$2,'media',$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16,$17,$18,TRUE)""",
-        code, review_code, m.from_user.id, title[:150], json.dumps(media,ensure_ascii=False),
+        code, review_code, uid, title[:150], json.dumps(media,ensure_ascii=False),
         json.dumps(review_items,ensure_ascii=False), len(media), counts[0], counts[1], counts[2],
         sum(x.get('type')=='audio' for x in media), price, tags, server_name, access_mode, auto_delete, allow_forward, watermark_enabled)
 
     await state.clear()
     tagtext=' '.join('#'+html.escape(t) for t in tags) or '-'
-    lang = await get_lang(m.from_user.id) or 'id'
+    lang = await get_lang(uid) or 'id'
     labels = {
         'id': ('Save Successful', 'Judul', 'Tag', 'Tipe', 'Bot', 'media', 'gratis', 'berbayar'),
         'en': ('Save Successful', 'Title', 'Tag', 'Type', 'Bot', 'media', 'free', 'paid'),
@@ -456,23 +456,38 @@ async def price(m,state):
         return await m.answer(_t(await _lang(m.from_user.id), 'price_range', min=f'{PAID_CODE_MIN_IDR:,}'.replace(',', '.'), max=f'{PAID_CODE_MAX_IDR:,}'.replace(',', '.')))
     await state.update_data(price=price)
     await state.set_state(U.server)
-    await m.answer(
-        "🗂 <b>PILIH SERVER</b>\n\n1 — Media 5th ke bawah\n2 — Media SMP\n3 — Tante/Janda/STW\n\nKirim angka 1, 2, atau 3.",
-        parse_mode='HTML')
+    p=await get_pool()
+    server_rows=await p.fetch("SELECT server_no,name FROM server_categories WHERE enabled=TRUE ORDER BY server_no")
+    if not server_rows:
+        server_rows=[{'server_no':i,'name':f'Server {i}'} for i in range(1,11)]
+    buttons=[[InlineKeyboardButton(text=f"🗂 {r['server_no']} — {r['name']}",callback_data=f"up_server:{r['server_no']}")] for r in server_rows]
+    await m.answer("🗂 <b>PILIH SERVER</b>\n\nPilih kategori server:",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data.startswith("up_server:"))
+async def server_callback(c,state):
+    if not await admin_access(c.from_user.id):
+        return await c.answer("Khusus admin/owner.",show_alert=True)
+    try: n=int(c.data.split(":",1)[1])
+    except: return await c.answer("Server tidak valid.",show_alert=True)
+    p=await get_pool()
+    row=await p.fetchrow("SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE",n)
+    name=str(row["name"]) if row else f"Server {n}"
+    await state.update_data(server_name=f"Server {n} — {name}")
+    await state.set_state(U.access)
+    await c.answer()
+    await c.message.edit_text(f"🗂 Server dipilih: <b>{html.escape(name)}</b>\\n\\n🔐 <b>AKSES CODE</b>\\nKirim <code>all</code>, <code>free</code>, atau <code>vip</code>.",parse_mode="HTML")
 
 @router.message(U.server)
 async def server(m,state):
-    value=(m.text or '').strip().lower()
-    options={
-        '1':'Server 1 — Media 5th ke bawah', 'server 1':'Server 1 — Media 5th ke bawah',
-        '2':'Server 2 — Media SMP', 'server 2':'Server 2 — Media SMP',
-        '3':'Server 3 — Tante/Janda/STW', 'server 3':'Server 3 — Tante/Janda/STW',
-    }
-    if value not in options:
-        return await m.answer('Pilihan tidak valid. Kirim angka 1, 2, atau 3.')
-    await state.update_data(server_name=options[value])
+    value=(m.text or '').strip()
+    if not value.isdigit() or not 1 <= int(value) <= 10:
+        return await m.answer('Pilih server 1 sampai 10, atau gunakan tombol server.')
+    n=int(value); p=await get_pool()
+    row=await p.fetchrow("SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE",n)
+    name=str(row["name"]) if row else f"Server {n}"
+    await state.update_data(server_name=f"Server {n} — {name}")
     await state.set_state(U.access)
-    await m.answer('🔐 <b>AKSES CODE</b>\nKirim salah satu: <code>all</code>, <code>free</code>, atau <code>vip</code>.',parse_mode='HTML')
+    await m.answer(f'🗂 Server dipilih: <b>{html.escape(name)}</b>\\n🔐 <b>AKSES CODE</b>\\nKirim <code>all</code>, <code>free</code>, atau <code>vip</code>.',parse_mode='HTML')
 
 @router.message(U.access)
 async def access(m,state):
@@ -511,9 +526,64 @@ async def watermark(m,state):
         return await m.answer('Kirim ya/tidak/default (yes/no/default).')
     if value == 'default':
         value = str(await (await get_pool()).fetchval("SELECT value FROM settings WHERE key='default_watermark_enabled'") or 'on').lower()
-    await state.update_data(watermark_enabled=value in {'ya','yes','on'})
+    await state.update_data(watermark_enabled=value in {'ya','yes','on'}, preview_media=[])
+    await state.set_state(U.preview)
+    await m.answer(
+        '🖼 <b>PREVIEW UNTUK PENGGUNA</b>\\n\\n'
+        'Kirim <b>1 video</b> atau maksimal <b>5 gambar</b> sebagai preview gratis. '
+        'Jangan campur video dan gambar. Jika tidak ingin preview, kirim <code>-</code>. '
+        'Setelah selesai tekan tombol Selesai Preview.',
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='✅ Selesai Preview', callback_data='up_preview_done')],
+            [InlineKeyboardButton(text='⏭ Lewati Preview', callback_data='up_preview_skip')],
+            [InlineKeyboardButton(text='❌ Batal', callback_data='up_cancel')]
+        ]))
+
+
+@router.message(U.preview)
+async def receive_preview(m,state):
+    if not await admin_access(m.from_user.id):
+        await state.clear()
+        return await m.answer("Fitur upload hanya untuk admin/owner.")
     d=await state.get_data()
-    await create_code(m,state,int(d.get('price') or 0))
+    items=list(d.get('preview_media',[]))
+    if (m.text or '').strip() == '-':
+        await state.update_data(preview_media=[])
+        d=await state.get_data()
+        return await create_code(m,state,int(d.get('price') or 0))
+    if m.video:
+        if items:
+            return await m.answer("Preview hanya boleh 1 video ATAU maksimal 5 gambar. Hapus pilihan sebelumnya dengan /cancelupload lalu mulai lagi, atau selesaikan preview.")
+        v=m.video
+        items=[{'type':'video','telegram_file_id':v.file_id,'telegram_file_unique_id':v.file_unique_id,'file_name':v.file_name or 'preview.mp4','mime_type':v.mime_type or 'video/mp4','file_size':v.file_size or 0,'storage_status':'telegram_file_id_only'}]
+    elif m.photo:
+        if any(x.get('type')=='video' for x in items):
+            return await m.answer("Preview sudah berisi video. Jangan campur video dan gambar.")
+        if len(items)>=5:
+            return await m.answer("Maksimal 5 gambar preview.")
+        ph=m.photo[-1]
+        items.append({'type':'photo','telegram_file_id':ph.file_id,'telegram_file_unique_id':ph.file_unique_id,'file_name':f'{ph.file_unique_id}.jpg','mime_type':'image/jpeg','file_size':ph.file_size or 0,'storage_status':'telegram_file_id_only'})
+    else:
+        return await m.answer("Kirim 1 video atau maksimal 5 gambar. Untuk melewati preview, kirim `-`.",parse_mode='Markdown')
+    await state.update_data(preview_media=items)
+    await m.answer(f"✅ Preview diterima: {len(items)} item. Kirim lagi jika ingin menambah gambar, atau tekan Selesai Preview.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='✅ Selesai Preview',callback_data='up_preview_done')],
+            [InlineKeyboardButton(text='❌ Batal',callback_data='up_cancel')]
+        ]))
+
+@router.callback_query(F.data.in_({'up_preview_done','up_preview_skip'}))
+async def preview_done(c,state):
+    if not await admin_access(c.from_user.id):
+        return await c.answer("Khusus admin/owner.",show_alert=True)
+    d=await state.get_data()
+    if c.data=='up_preview_skip':
+        await state.update_data(preview_media=[])
+        d=await state.get_data()
+    await c.answer()
+    await create_code(c.message,state,int(d.get('price') or 0), uid=c.from_user.id, username=c.from_user.username, full_name=c.from_user.full_name)
+
 
 @router.callback_query(F.data=='up_cancel')
 async def cancel(c,state):

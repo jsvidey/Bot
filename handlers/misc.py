@@ -105,7 +105,9 @@ async def _paged_codes(page:int=0, mode:str="all", per_page:int=10):
     return rows,total
 
 def _code_link(code):
-    return f"https://t.me/Jsshowbot?start={code}"
+    # Always use the configured bot username so generated links match Railway BOT_USERNAME.
+    bot_name = str(BOT_USERNAME or "").strip().lstrip("@")
+    return f"https://t.me/{bot_name}?start={code}" if bot_name else ""
 
 def _code_text_row(r, prefix=""):
     title=html.escape((r['title'] or 'Untitled')[:60])
@@ -118,6 +120,9 @@ def _code_text_row(r, prefix=""):
     )
 
 async def _render_code_command(m: Message, mode: str = "top"):
+    if mode == "all":
+        await m.answer("🗂 <b>PILIH SERVER</b>\\n\\nPilih server untuk mencari judul media:",parse_mode="HTML",reply_markup=await _server_keyboard(m.from_user.id))
+        return
     rows, total = await _paged_codes(0, mode, 10)
     lang = await get_lang(m.from_user.id) or "id"
     title = "🔝 <b>TOP 10 CODE</b>" if mode == "top" else "🔑 <b>ALL CODE</b>"
@@ -164,9 +169,50 @@ async def _render_code_list(c,page=0,mode="all"):
         text+="Klik <b>Judul</b> untuk mencari/membuka media yang terhubung dengan CODE tersebut."
     await c.message.edit_text(text,parse_mode='HTML',reply_markup=await _code_nav(page,total,mode,c.from_user.id))
 
+async def _server_keyboard(uid=0):
+    p=await get_pool()
+    rows=await p.fetch("SELECT server_no,name FROM server_categories WHERE enabled=TRUE ORDER BY server_no")
+    if not rows:
+        rows=[{"server_no":i,"name":f"Server {i}"} for i in range(1,11)]
+    buttons=[[InlineKeyboardButton(text=f"🗂 Server {r['server_no']} • {r['name']}",callback_data=f"serverbrowse:{r['server_no']}:0")] for r in rows]
+    buttons.append([InlineKeyboardButton(text=await _t(uid,'back'),callback_data='home')])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
 @router.callback_query(F.data=='code_all')
 async def code_all(c):
-    await loading(c); await _render_code_list(c,0,"all")
+    await loading(c)
+    lang=await _lang(c.from_user.id)
+    text="🗂 <b>PILIH SERVER</b>\\n\\nPilih server untuk melihat judul media:" if lang == 'id' else "🗂 <b>CHOOSE A SERVER</b>\\n\\nChoose a server to browse media titles:"
+    await c.message.edit_text(text,parse_mode='HTML',reply_markup=await _server_keyboard(c.from_user.id))
+
+@router.callback_query(F.data.startswith('serverbrowse:'))
+async def serverbrowse(c):
+    await loading(c)
+    try:
+        _, no, page = c.data.split(':',2); no=int(no); page=max(0,int(page))
+    except Exception:
+        return await c.answer("Server tidak valid.",show_alert=True)
+    p=await get_pool()
+    server=await p.fetchrow("SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE",no)
+    if not server:
+        return await c.answer("Server belum tersedia.",show_alert=True)
+    full_name=f"Server {no} — {server['name']}"
+    rows=await p.fetch("SELECT code,title,price_idr FROM files WHERE active=TRUE AND server_name=$1 ORDER BY id DESC LIMIT 10 OFFSET $2",full_name,page*10)
+    total=int(await p.fetchval("SELECT COUNT(*) FROM files WHERE active=TRUE AND server_name=$1",full_name) or 0)
+    buttons=[]
+    for r in rows:
+        price=int(r['price_idr'] or 0)
+        price_text='FREE' if not price else 'Rp'+format(price,',').replace(',','.')
+        buttons.append([InlineKeyboardButton(text=f"📝 {(r['title'] or 'Untitled')[:40]} • {price_text}",callback_data=f"browsecode:{r['code']}")])
+    nav=[]
+    if page>0: nav.append(InlineKeyboardButton(text="⬅️",callback_data=f"serverbrowse:{no}:{page-1}"))
+    nav.append(InlineKeyboardButton(text=f"📄 {page+1}/{max(1,(total+9)//10)}",callback_data="noop"))
+    if (page+1)*10<total: nav.append(InlineKeyboardButton(text="➡️",callback_data=f"serverbrowse:{no}:{page+1}"))
+    buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="🔙 Pilih Server",callback_data="code_all")])
+    text=f"🗂 <b>SERVER {no} • {html.escape(server['name'])}</b>\\n\\n"
+    text += "\\n".join(f"• {html.escape(r['title'] or 'Untitled')}" for r in rows) if rows else "Belum ada code di server ini."
+    await c.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @router.callback_query(F.data.startswith('codepage:'))
 async def codepage(c):
@@ -202,8 +248,21 @@ async def browsecode(c):
     await loading(c)
     code=c.data.split(':',1)[1]
     p=await get_pool()
-    f=await p.fetchrow("SELECT code,title,media_count,views,likes,hates,favorites,price_idr FROM files WHERE lower(code)=lower($1) AND active=TRUE", code)
+    f=await p.fetchrow("SELECT code,title,media_count,views,likes,hates,favorites,price_idr,review_media,server_name FROM files WHERE lower(code)=lower($1) AND active=TRUE", code)
     if not f: return await c.answer(await _t(c.from_user.id,'not_found'),show_alert=True)
+    try:
+        previews=f['review_media'] if isinstance(f['review_media'],list) else json.loads(f['review_media'] or '[]')
+    except Exception:
+        previews=[]
+    # Preview only; never send the paid media list from this browser action.
+    try:
+        if len(previews)==1 and previews[0].get('type')=='video':
+            await c.bot.send_video(c.from_user.id,previews[0]['telegram_file_id'],caption="🎬 Preview video")
+        elif previews and all(x.get('type')=='photo' for x in previews):
+            from aiogram.types import InputMediaPhoto
+            await c.bot.send_media_group(c.from_user.id,media=[InputMediaPhoto(media=x['telegram_file_id']) for x in previews[:5]])
+    except Exception:
+        pass
     price=int(f['price_idr'] or 0)
     paid=f"💰 Harga: <b>Rp{price:,}</b>".replace(',','.') if price else "🆓 <b>FREE CODE</b>"
     href=html.escape(_code_link(f['code']),quote=True)
@@ -217,6 +276,7 @@ async def browsecode(c):
             [InlineKeyboardButton(text=await _t(c.from_user.id,'like'),callback_data=f'react:like:{f["code"]}'),
              InlineKeyboardButton(text=await _t(c.from_user.id,'hate'),callback_data=f'react:hate:{f["code"]}'),
              InlineKeyboardButton(text=await _t(c.from_user.id,'fav'),callback_data=f'react:favorite:{f["code"]}')],
+            [InlineKeyboardButton(text='🛒 Buy Now',callback_data=f'getcode:{f["code"]}')],
             [InlineKeyboardButton(text=await _t(c.from_user.id,'all_code'),callback_data='code_all')]
         ])
     )

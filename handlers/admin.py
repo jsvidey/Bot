@@ -56,7 +56,7 @@ async def admin_command(m):
 class AdminState(StatesGroup):
     broadcast=State(); edit_code=State(); edit_title=State(); edit_tags=State(); edit_price=State(); user_action=State(); move=State(); grant_open_user=State(); grant_open_code=State(); role_user=State()
     b2_name=State(); b2_region=State(); b2_bucket=State(); b2_key_id=State(); b2_app_key=State(); vip_channel_value=State()
-    setting_value=State(); package_value=State(); package_add=State(); edit_option=State(); welcome_id=State(); welcome_en=State()
+    setting_value=State(); package_value=State(); package_add=State(); edit_option=State(); welcome_id=State(); welcome_en=State(); server_name=State()
 
 def admin(uid): return is_config_admin(uid)
 async def val(key): return str(await (await get_pool()).fetchval("SELECT value FROM settings WHERE key=$1",key) or "off")
@@ -71,6 +71,7 @@ def kb():
   [InlineKeyboardButton(text='📝 Pesan Sambutan Bot',callback_data='adm:welcome')],
   [InlineKeyboardButton(text='💎 VIP Channel Links',callback_data='adm:vipchannels'),InlineKeyboardButton(text='💬 Chat Admin',callback_data='adm:chat')],
   [InlineKeyboardButton(text='🎨 Upload/Delivery Defaults',callback_data='adm:defaults')],
+  [InlineKeyboardButton(text='🗂 Server Categories',callback_data='adm:servers')],
   [InlineKeyboardButton(text='🧾 Manual Payment',callback_data='adm:manual'),InlineKeyboardButton(text='📊 Statistics',callback_data='adm:stats')],
   [InlineKeyboardButton(text='📦 Paket VIP',callback_data='adm:packages'),InlineKeyboardButton(text='📡 Force Join',callback_data='adm:channels')],
   [InlineKeyboardButton(text='🧾 Transaksi',callback_data='adm:transactions'),InlineKeyboardButton(text='🔐 User Security',callback_data='adm:security')],
@@ -1302,3 +1303,89 @@ async def save_setting(m,state):
  try: value=int(re.sub(r'\D','',m.text or ''))
  except:return await m.answer('❌ Angka tidak valid.')
  await setval(key,value); await state.clear(); await m.answer(f'✅ {key} = {value}')
+
+
+@router.callback_query(F.data == 'adm:servers')
+async def admin_servers(c: CallbackQuery):
+    if not await admin_access(c.from_user.id):
+        return await c.answer("Admin only.", show_alert=True)
+    p=await get_pool()
+    rows=await p.fetch("SELECT server_no,name,enabled FROM server_categories ORDER BY server_no")
+    buttons=[]
+    for r in rows:
+        status="✅" if r["enabled"] else "⛔"
+        buttons.append([
+            InlineKeyboardButton(text=f"{status} Server {r['server_no']} • {r['name']}",callback_data=f"admserver:edit:{r['server_no']}"),
+            InlineKeyboardButton(text="Hapus/aktifkan",callback_data=f"admserver:toggle:{r['server_no']}")
+        ])
+    buttons.append([InlineKeyboardButton(text="➕ Tambah/aktifkan slot server",callback_data="admserver:add")])
+    buttons.append([InlineKeyboardButton(text="🔙 Kembali",callback_data="admin_home")])
+    await c.message.edit_text("🗂 <b>SERVER CATEGORIES</b>\\nEdit nama, nonaktifkan, atau aktifkan kembali server 1–10.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.answer()
+
+@router.callback_query(F.data.startswith('admserver:edit:'))
+async def admin_server_edit(c: CallbackQuery,state: FSMContext):
+    if not await admin_access(c.from_user.id):
+        return await c.answer("Admin only.",show_alert=True)
+    no=int(c.data.rsplit(':',1)[1])
+    p=await get_pool()
+    row=await p.fetchrow("SELECT name FROM server_categories WHERE server_no=$1",no)
+    if not row:
+        return await c.answer("Slot server tidak ditemukan.",show_alert=True)
+    await state.set_state(AdminState.server_name)
+    await state.update_data(server_no=no)
+    await c.message.answer(f"Kirim nama baru untuk Server {no}. Nama saat ini: {html.escape(row['name'])}")
+    await c.answer()
+
+@router.callback_query(F.data.startswith('admserver:toggle:'))
+async def admin_server_toggle(c: CallbackQuery):
+    if not await admin_access(c.from_user.id):
+        return await c.answer("Admin only.",show_alert=True)
+    no=int(c.data.rsplit(':',1)[1])
+    p=await get_pool()
+    await p.execute("UPDATE server_categories SET enabled=NOT enabled,updated_at=NOW() WHERE server_no=$1",no)
+    await admin_servers(c)
+
+@router.callback_query(F.data == 'admserver:add')
+async def admin_server_add(c: CallbackQuery,state: FSMContext):
+    if not await admin_access(c.from_user.id):
+        return await c.answer("Admin only.",show_alert=True)
+    p=await get_pool()
+    row=await p.fetchrow("SELECT server_no FROM server_categories WHERE enabled=FALSE ORDER BY server_no LIMIT 1")
+    if not row:
+        return await c.answer("Semua slot 1–10 sudah aktif. Nonaktifkan salah satu slot dahulu.",show_alert=True)
+    no=int(row['server_no'])
+    await p.execute("UPDATE server_categories SET enabled=TRUE,updated_at=NOW() WHERE server_no=$1",no)
+    await state.set_state(AdminState.server_name)
+    await state.update_data(server_no=no)
+    await c.message.answer(f"Kirim nama untuk mengaktifkan Server {no}.")
+    await c.answer()
+
+@router.message(AdminState.server_name)
+async def admin_server_name_save(m: Message,state: FSMContext):
+    if not await admin_access(m.from_user.id):
+        await state.clear()
+        return await m.answer("Admin only.")
+    name=(m.text or '').strip()
+    if not name or len(name)>60:
+        return await m.answer("Nama server wajib 1–60 karakter. Coba lagi.")
+    d=await state.get_data()
+    no=int(d.get('server_no',0))
+    p=await get_pool()
+    await p.execute("UPDATE server_categories SET name=$1,enabled=TRUE,updated_at=NOW() WHERE server_no=$2",name,no)
+    await state.clear()
+    await m.answer(f"✅ Server {no} sekarang bernama <b>{html.escape(name)}</b>.",parse_mode="HTML")
+
+@router.callback_query(F.data == "admin_home")
+async def admin_home_callback(c: CallbackQuery):
+    if not await admin_access(c.from_user.id):
+        return await c.answer("Admin only.", show_alert=True)
+    p=await get_pool()
+    try:
+        users=await p.fetchval("SELECT COUNT(*) FROM users")
+        codes=await p.fetchval("SELECT COUNT(*) FROM files WHERE active=TRUE")
+        pending=await p.fetchval("SELECT COUNT(*) FROM manual_payments WHERE status='pending'")
+    except Exception:
+        users=codes=pending=0
+    await c.message.edit_text(f"👑 <b>ADMIN PANEL</b>\\n\\n👥 Users: <b>{users}</b>\\n🔑 Active Code: <b>{codes}</b>\\n🧾 Manual Pending: <b>{pending}</b>",parse_mode="HTML",reply_markup=kb())
+    await c.answer()
