@@ -24,12 +24,14 @@ def channel_reply_kb(lang: str = "id", is_admin: bool = False):
         KeyboardButton(text="📥 Buka Media" if not en else "📥 Open Media"),
         KeyboardButton(text="💎 VIP"),
         KeyboardButton(text="🔑 Code"),
+        KeyboardButton(text="💎 VIP Access"),
+        KeyboardButton(text="💬 Chat Admin" if not en else "💬 Message Admin"),
         KeyboardButton(text="❓ Bantuan" if not en else "❓ Help"),
     ]
-    rows = [[labels[0], labels[1]], [labels[2], labels[3]], [labels[4]]]
+    rows = [[labels[0], labels[1]], [labels[2], labels[3]], [labels[4], labels[5]], [labels[6]]]
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Pilih menu atau kirim kode…" if not en else "Choose a menu or send a code…",
+        input_field_placeholder="Kirim kode media atau pilih menu…" if not en else "Send a media code or choose a menu…",
     )
