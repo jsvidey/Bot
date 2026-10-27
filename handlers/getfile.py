@@ -129,6 +129,7 @@ async def show(m,code):
         kb=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text='🛒 Minat? Lanjut Buy Sekarang' if lang=='id' else '🛒 Interested? Buy Now',callback_data=f'getcode:{canonical}')],
             [InlineKeyboardButton(text='🔎 Cari Code Lain' if lang=='id' else '🔎 Find Another Code',callback_data='getfile')],
+            [InlineKeyboardButton(text='❌ Batal',callback_data='home')],
         ])
         server_name = str(f.get('server_name') or '—')
         from utils.bot_identity import get_bot_username
@@ -319,7 +320,8 @@ async def send_page(bot, chat_id, code, media, page, access_expires_at=None, per
                 f"🔑 Code: {html.escape(str(code))}\n"
                 f"📁 Media {i}/{total}\n"
                 f"🤖 Bot: @{html.escape(await __import__('utils.bot_identity', fromlist=['get_bot_username']).get_bot_username())}\n"
-                f"📢 Channel: {html.escape(str(ALL_CODE_CHANNEL_URL))}"
+                f"📢 Channel: <a href=\"{html.escape(str(ALL_CODE_CHANNEL_URL), quote=True)}\">Update</a>\n"
+                f"🛠 <a href=\"https://t.me/+ezE2-f-YtEo4NzU1\">Pembuatan Bot dan Website</a>"
             )
             custom_watermark = await pool.fetchval("SELECT value FROM settings WHERE key='watermark_text'")
             if custom_watermark and str(custom_watermark).strip():
@@ -412,16 +414,26 @@ async def send_page(bot, chat_id, code, media, page, access_expires_at=None, per
     return sent, missing
 
 async def delivery_kb(code, page, total, done=False, lang='id'):
-    if done:
-        return InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text='👍 Like',callback_data=f'react:like:{code}'),
-            InlineKeyboardButton(text='👎 Hate',callback_data=f'react:hate:{code}'),
-            InlineKeyboardButton(text=_L(lang,'favorite'),callback_data=f'react:favorite:{code}')
-        ]])
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=_L(lang,'continue'),callback_data=f'continue:{code}:{page+1}'),
-        InlineKeyboardButton(text=_L(lang,'cancel'),callback_data=f'cancelget:{code}')
-    ]])
+    pages = max(1, (int(total) + 9) // 10)
+    rows = []
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text='⬅️ Prev', callback_data=f'page:{code}:{page-1}'))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton(text='Next ➡️', callback_data=f'page:{code}:{page+1}'))
+    if nav: rows.append(nav)
+    # Quick page-jump buttons for large collections, kept within Telegram callback limits.
+    if pages > 2:
+        jumps = [0, max(0, page-1), min(pages-1, page+1), pages-1]
+        jumps = list(dict.fromkeys(jumps))
+        rows.append([InlineKeyboardButton(text=f'📄 {n+1}', callback_data=f'page:{code}:{n}') for n in jumps])
+    rows.append([
+        InlineKeyboardButton(text='👍 Like', callback_data=f'react:like:{code}'),
+        InlineKeyboardButton(text='👎 No Hate', callback_data=f'react:hate:{code}'),
+        InlineKeyboardButton(text='⭐ Favorit', callback_data=f'react:favorite:{code}')
+    ])
+    rows.append([InlineKeyboardButton(text='❌ Batal', callback_data=f'cancelget:{code}')])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 async def _access_expiry(uid, code):
     return await (await get_pool()).fetchval("""
@@ -556,6 +568,23 @@ async def openfree(c):
     await deliver_page(c,code,0,permanent=False,access_expires_at=await _access_expiry(c.from_user.id,code))
 
 
+@router.callback_query(F.data == 'dismissnotice')
+async def dismiss_payment_notice(c):
+    """Remove the temporary payment notice when the user dismisses it."""
+    try:
+        await c.answer()
+    except Exception:
+        pass
+    if c.message:
+        try:
+            await c.message.delete()
+        except Exception:
+            try:
+                await c.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+
 @router.callback_query(F.data.startswith('openpaid:'))
 async def openpaid(c):
     code=c.data.split(':',1)[1]; f=await get_file(code)
@@ -566,6 +595,12 @@ async def openpaid(c):
     from utils.group_notify import notify_code_opened
     await notify_code_opened(c.bot, code, c.from_user.id, c.from_user.username, c.from_user.full_name)
     await deliver_page(c,code,0,permanent=False)
+    # Once Open Media has been used, remove the payment notification itself.
+    if c.message:
+        try:
+            await c.message.delete()
+        except Exception:
+            pass
 
 @router.callback_query(F.data.startswith('payfile:'))
 async def payfile(c,state):

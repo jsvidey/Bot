@@ -158,11 +158,10 @@ async def reply_vip(m: Message):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     lang = await get_lang(m.from_user.id) or "id"
     await m.bot.send_chat_action(m.chat.id, "typing")
-    rows = await (await get_pool()).fetch("SELECT code,name,price,duration_days FROM vip_packages WHERE active ORDER BY price")
-    buttons = [[InlineKeyboardButton(text=f'💎 {r["name"]} • Rp{int(r["price"]):,}'.replace(',', '.'), callback_data=f'vip:{r["code"]}')] for r in rows]
-    if not buttons:
-        return await m.answer("Paket VIP belum tersedia. Silakan hubungi admin." if lang == "id" else "VIP packages are not available yet. Please contact the admin.")
-    await m.answer("💎 <b>BELI VIP</b>\n\nPilih paket:" if lang == "id" else "💎 <b>BUY VIP</b>\n\nChoose a package:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_packages WHERE active ORDER BY price")
+    buttons = [[InlineKeyboardButton(text=f"{r['name']} • Rp{int(r['price']):,}".replace(',', '.'), callback_data=f"vip:{r['code']}")] for r in rows]
+    buttons += [[InlineKeyboardButton(text="🛍️ Ambil Sebagian",callback_data="vipsome")], [InlineKeyboardButton(text="🛒 Ambil Semua",callback_data="vipall")], [InlineKeyboardButton(text="ℹ️ About",callback_data="vipabout"),InlineKeyboardButton(text="🎁 Donasi",callback_data="vipdonate")]]
+    await m.answer("📚 <b>Daftar VVIP Bot</b>\n\nInfo Nilai\n<b>ALL VIP GROUP</b>\nKeterangan: Daftar paket eksklusif. Klik paket untuk detail lengkap dan penawaran spesial.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @router.message(F.chat.type == "private", F.text == "🔑 Code")
 async def reply_codes(m: Message):

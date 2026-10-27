@@ -1170,12 +1170,12 @@ async def admin_setting_save(m, state: FSMContext):
 @router.callback_query(F.data == 'adm:packages')
 async def admin_packages(c):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
-    p=await get_pool(); rows=await p.fetch('SELECT code,name,price,duration_days,active FROM vip_packages ORDER BY price DESC')
+    p=await get_pool(); rows=await p.fetch('SELECT code,name,price,duration_days,active,link_url FROM vip_packages ORDER BY price DESC')
     buttons=[]; lines=['📦 <b>VIP PACKAGES</b>\n']
     for r in rows:
         state='ON' if r['active'] else 'OFF'
-        lines.append(f"• <code>{html.escape(r['code'])}</code> — {html.escape(r['name'])} — Rp{int(r['price']):,} — {r['duration_days']} hari — {state}".replace(',','.'))
-        buttons.append([InlineKeyboardButton(text=f"✏️ {r['code']} • Rp{int(r['price']):,}".replace(',','.'),callback_data=f"admpkg:edit:{r['code']}"),InlineKeyboardButton(text=f"{ 'Matikan' if r['active'] else 'Aktifkan' }",callback_data=f"admpkg:toggle:{r['code']}")])
+        lines.append(f"• <code>{html.escape(r['code'])}</code> — {html.escape(r['name'])} — Rp{int(r['price']):,} — {r['duration_days']} hari — {state} — {'LINK OK' if r['link_url'] else 'LINK BELUM DIISI'}".replace(',','.'))
+        buttons.append([InlineKeyboardButton(text=f"✏️ {r['code']} • Rp{int(r['price']):,}".replace(',','.'),callback_data=f"admpkg:edit:{r['code']}"),InlineKeyboardButton(text=f"{ 'Matikan' if r['active'] else 'Aktifkan' }",callback_data=f"admpkg:toggle:{r['code']}"),InlineKeyboardButton(text='🗑 Hapus',callback_data=f"admpkg:delete:{r['code']}")])
     buttons.append([InlineKeyboardButton(text='➕ Tambah Paket VIP',callback_data='admpkg:add')])
     buttons.append([InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')])
     await c.message.edit_text('\n'.join(lines),parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
@@ -1184,21 +1184,23 @@ async def admin_packages(c):
 async def admin_package_add_start(c,state: FSMContext):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
     await state.set_state(AdminState.package_add)
-    await c.message.answer('Kirim format: <code>code | Nama paket | harga rupiah | durasi hari</code>\nContoh: <code>vip90 | VIP 90 Hari | 250000 | 90</code>',parse_mode='HTML')
+    await c.message.answer('Kirim format: <code>code | Nama paket | harga | durasi hari | link Telegram</code>\nContoh: <code>premium | PREMIUM ACCESS | 100000 | 30 | https://t.me/+invite</code>',parse_mode='HTML')
     await c.answer()
 
 @router.message(AdminState.package_add)
 async def admin_package_add_save(m,state: FSMContext):
     if not await admin_access(m.from_user.id): await state.clear(); return
     parts=[x.strip() for x in (m.text or '').split('|')]
-    if len(parts)!=4: return await m.answer('Format harus: code | nama | harga | hari')
+    if len(parts) not in (4,5): return await m.answer('Format: code | nama | harga | hari | link Telegram (opsional)')
     code,name=parts[0],parts[1]
+    link=parts[4] if len(parts)==5 else ''
     try: price,days=int(parts[2]),int(parts[3])
     except ValueError: return await m.answer('Harga dan durasi harus angka.')
     if not re.fullmatch(r'[A-Za-z0-9_-]{2,32}',code): return await m.answer('Code paket hanya boleh huruf, angka, _ dan - (2–32 karakter).')
     if not name or not 1000<=price<=10000000 or not 1<=days<=3650: return await m.answer('Nama wajib, harga Rp1.000–10.000.000, durasi 1–3650 hari.')
+    if link and not link.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('Link harus berupa URL Telegram https://t.me/...')
     try:
-        await (await get_pool()).execute('INSERT INTO vip_packages(code,name,price,duration_days,active) VALUES($1,$2,$3,$4,TRUE)',code,name[:100],price,days)
+        await (await get_pool()).execute('INSERT INTO vip_packages(code,name,price,duration_days,active,link_url) VALUES($1,$2,$3,$4,TRUE,$5)',code,name[:100],price,days,link)
     except Exception:
         return await m.answer('Code paket sudah digunakan atau gagal disimpan.')
     await state.clear(); await m.answer(f'✅ Paket VIP <code>{html.escape(code)}</code> ditambahkan.',parse_mode='HTML')
@@ -1215,10 +1217,10 @@ async def admin_package_toggle(c):
 async def admin_package_edit(c,state: FSMContext):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
     code=c.data.rsplit(':',1)[1]
-    r=await (await get_pool()).fetchrow('SELECT code,name,price,duration_days FROM vip_packages WHERE code=$1',code)
+    r=await (await get_pool()).fetchrow('SELECT code,name,price,duration_days,link_url FROM vip_packages WHERE code=$1',code)
     if not r: return await c.answer('Paket tidak ditemukan.',show_alert=True)
     await state.set_state(AdminState.package_value); await state.update_data(package_code=code)
-    await c.message.answer(f"Edit paket {html.escape(code)}\nNilai sekarang: nama={html.escape(r['name'])}, harga={r['price']}, hari={r['duration_days']}\nKirim format: <code>Nama paket | harga | hari</code>",parse_mode='HTML')
+    await c.message.answer(f"Edit paket {html.escape(code)}\nNilai sekarang: nama={html.escape(r['name'])}, harga={r['price']}, hari={r['duration_days']}, link={html.escape(str(r['link_url'] or '-'))}\nKirim format: <code>Nama paket | harga | hari | link Telegram</code>",parse_mode='HTML')
     await c.answer()
 
 @router.message(AdminState.package_value)
@@ -1226,12 +1228,22 @@ async def admin_package_save(m,state: FSMContext):
     if not await admin_access(m.from_user.id): await state.clear(); return
     d=await state.get_data(); code=str(d.get('package_code') or '')
     parts=[x.strip() for x in (m.text or '').split('|')]
-    if len(parts)!=3: return await m.answer('Format harus: Nama paket | harga | hari')
+    if len(parts) not in (3,4): return await m.answer('Format: Nama paket | harga | hari | link Telegram')
     try: price,days=int(parts[1]),int(parts[2])
     except ValueError: return await m.answer('Harga dan hari harus angka.')
     if not parts[0] or not 1000<=price<=10000000 or not 1<=days<=3650: return await m.answer('Nama wajib, harga Rp1.000–10.000.000, durasi 1–3650 hari.')
-    await (await get_pool()).execute('UPDATE vip_packages SET name=$1,price=$2,duration_days=$3 WHERE code=$4',parts[0][:100],price,days,code)
+    link=parts[3] if len(parts)==4 else str((await (await get_pool()).fetchrow('SELECT link_url FROM vip_packages WHERE code=$1',code))['link_url'] or '')
+    if link and not link.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('Link harus berupa URL Telegram https://t.me/...')
+    await (await get_pool()).execute('UPDATE vip_packages SET name=$1,price=$2,duration_days=$3,link_url=$4 WHERE code=$5',parts[0][:100],price,days,link,code)
     await state.clear(); await m.answer('✅ Paket VIP diperbarui.')
+
+@router.callback_query(F.data.startswith('admpkg:delete:'))
+async def admin_package_delete(c):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    code=c.data.rsplit(':',1)[1]
+    await (await get_pool()).execute('DELETE FROM vip_packages WHERE code=$1',code)
+    await c.answer('Paket VIP dihapus.')
+    await admin_packages(c)
 
 @router.callback_query(F.data == 'adm:transactions')
 async def admin_transactions(c):
