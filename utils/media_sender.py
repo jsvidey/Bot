@@ -26,12 +26,12 @@ async def deliver_one(bot, chat_id, media, caption=None, reply_markup=None, prot
         typ = str(_value(media, "type", "media_type") or "document").lower()
         inp = FSInputFile(path)
         if typ == "photo":
-            return await bot.send_photo(chat_id, inp, caption=caption, reply_markup=reply_markup, protect_content=protect_content)
+            return await bot.send_photo(chat_id, inp, caption=caption, parse_mode="HTML", reply_markup=reply_markup, protect_content=protect_content)
         if typ == "video":
-            return await bot.send_video(chat_id, inp, caption=caption, reply_markup=reply_markup, protect_content=protect_content)
+            return await bot.send_video(chat_id, inp, caption=caption, parse_mode="HTML", reply_markup=reply_markup, protect_content=protect_content)
         if typ == "audio":
-            return await bot.send_audio(chat_id, inp, caption=caption, reply_markup=reply_markup, protect_content=protect_content)
-        return await bot.send_document(chat_id, inp, caption=caption, reply_markup=reply_markup, protect_content=protect_content)
+            return await bot.send_audio(chat_id, inp, caption=caption, parse_mode="HTML", reply_markup=reply_markup, protect_content=protect_content)
+        return await bot.send_document(chat_id, inp, caption=caption, parse_mode="HTML", reply_markup=reply_markup, protect_content=protect_content)
     finally:
         try:
             os.remove(path)
@@ -52,9 +52,9 @@ async def deliver_telegram_file_id(bot, chat_id, media, caption=None, reply_mark
 
     typ = str(_value(media, "type", "media_type") or "document").lower()
     if typ == "photo":
-        return await bot.send_photo(chat_id, fid, caption=caption, reply_markup=reply_markup, protect_content=protect_content)
+        return await bot.send_photo(chat_id, fid, caption=caption, parse_mode="HTML", reply_markup=reply_markup, protect_content=protect_content)
     if typ == "video":
-        return await bot.send_video(chat_id, fid, caption=caption, reply_markup=reply_markup, protect_content=protect_content)
+        return await bot.send_video(chat_id, fid, caption=caption, parse_mode="HTML", reply_markup=reply_markup, protect_content=protect_content)
     if typ == "audio":
-        return await bot.send_audio(chat_id, fid, caption=caption, reply_markup=reply_markup, protect_content=protect_content)
-    return await bot.send_document(chat_id, fid, caption=caption, reply_markup=reply_markup, protect_content=protect_content)
+        return await bot.send_audio(chat_id, fid, caption=caption, parse_mode="HTML", reply_markup=reply_markup, protect_content=protect_content)
+    return await bot.send_document(chat_id, fid, caption=caption, parse_mode="HTML", reply_markup=reply_markup, protect_content=protect_content)

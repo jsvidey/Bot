@@ -1,4 +1,4 @@
-import uuid,base64,binascii,json,logging
+import uuid,base64,binascii,json,logging,html
 from io import BytesIO
 from decimal import Decimal
 from datetime import datetime, timezone
@@ -164,6 +164,8 @@ async def create_purchase(uid,typ,qty,amount,provider,name,metadata=None):
     for old in candidates:
         oldmeta=_norm_meta(old["metadata"])
         if metadata.get("code") and str(oldmeta.get("code") or "")!=str(metadata.get("code") or ""):
+            continue
+        if metadata.get("vip_package_codes") and sorted(map(str, oldmeta.get("vip_package_codes") or [])) != sorted(map(str, metadata.get("vip_package_codes") or [])):
             continue
         inv=str(old["invoice_id"] or "")
         if inv:
@@ -344,9 +346,46 @@ async def finalize_purchase(invoice,status_amount=None):
         from bot import bot
         await _transaction_post(bot,typ,uid,float(qty),int(row["amount"]),str(row["provider"]),meta)
         if typ=="file":
-            await bot.send_message(uid,f'✅ <b>Payment successful</b>\n\n🔑 Code: <code>{meta.get("code")}</code>\n📥 Pembayaran berhasil dan akses code sudah aktif.',parse_mode="HTML")
+            # The paid-access callback validates the buyer's active unlock and
+            # delivers media for the exact code purchased.
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            code = str(meta.get("code") or "").strip()
+            if code:
+                keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="📂 Open Media", callback_data=f"openpaid:{code}")],
+                    [InlineKeyboardButton(text="✖️ Tutup notifikasi", callback_data="dismissnotice")]
+                ])
+                await bot.send_message(
+                    uid,
+                    f'✅ <b>Payment successful</b>\n\n🔑 Code: <code>{code}</code>\n📥 Payment successful and code access already active.\n\n⚠️ Demi keamanan dan kenyamanan, segera simpan seluruh media setelah diterima.',
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+            else:
+                log.error("paid file purchase has no code invoice=%s", invoice)
+                await bot.send_message(uid, '✅ <b>Payment successful</b>\n📥 Payment confirmed, but the code is missing. Please contact admin.', parse_mode="HTML")
         elif typ=="vip":
-            await bot.send_message(uid,f'💎 <b>VIP berhasil diaktifkan!</b>\nDurasi: <b>{int(qty)} hari</b>.',parse_mode="HTML")
+            package_codes = [str(x) for x in (meta.get("vip_package_codes") or []) if str(x).strip()]
+            package_rows = []
+            if package_codes:
+                package_rows = await (await get_pool()).fetch(
+                    "SELECT code,name,link_url FROM vip_packages WHERE code=ANY($1::text[]) ORDER BY price DESC", package_codes
+                )
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            link_buttons = []
+            lines = ["💎 <b>Pembayaran VIP berhasil!</b>", f"Durasi akses bot: <b>{int(qty)} hari</b>.", ""]
+            for package in package_rows:
+                lines.append(f"📦 {html.escape(str(package['name']))}")
+                link = str(package['link_url'] or '').strip()
+                if link.startswith(('https://t.me/', 'https://telegram.me/')):
+                    link_buttons.append([InlineKeyboardButton(text=f"🔗 Buka {str(package['name'])[:45]}", url=link)])
+                else:
+                    lines.append("⚠️ Link paket belum dipasang admin. Silakan hubungi admin.")
+            if not package_rows:
+                lines.append("Pembelian sudah aktif. Silakan buka menu VIP untuk detail paket.")
+            await bot.send_message(uid, "\n".join(lines), parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=link_buttons) if link_buttons else None)
+
         else:
             await bot.send_message(uid,'✅ Payment completed successfully.')
     except Exception:
