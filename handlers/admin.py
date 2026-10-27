@@ -69,11 +69,12 @@ def kb():
   [InlineKeyboardButton(text='🔓 Buka Code untuk User',callback_data='adm:grantopen'),InlineKeyboardButton(text='👤 Atur Role User',callback_data='adm:roles')],
   [InlineKeyboardButton(text='🗄 B2 Storage',callback_data='adm:b2'),InlineKeyboardButton(text='⚙️ Bot Control',callback_data='adm:control')],
   [InlineKeyboardButton(text='📝 Pesan Sambutan Bot',callback_data='adm:welcome')],
-  [InlineKeyboardButton(text='💎 VIP Channel Links',callback_data='adm:vipchannels'),InlineKeyboardButton(text='💬 Chat Admin',callback_data='adm:chat')],
+  [InlineKeyboardButton(text='🔗 Setting VIP Group',callback_data='adm:vipchannels'),InlineKeyboardButton(text='💬 Chat Admin',callback_data='adm:chat')],
   [InlineKeyboardButton(text='🎨 Upload/Delivery Defaults',callback_data='adm:defaults')],
   [InlineKeyboardButton(text='🗂 Server Categories',callback_data='adm:servers')],
   [InlineKeyboardButton(text='🧾 Manual Payment',callback_data='adm:manual'),InlineKeyboardButton(text='📊 Statistics',callback_data='adm:stats')],
-  [InlineKeyboardButton(text='📦 Paket VIP',callback_data='adm:packages'),InlineKeyboardButton(text='📡 Force Join',callback_data='adm:channels')],
+  [InlineKeyboardButton(text='💎 Setting VIP Bot',callback_data='adm:packages'),InlineKeyboardButton(text='📡 Force Join',callback_data='adm:channels')],
+  [InlineKeyboardButton(text='🔎 Dashboard Lengkap',callback_data='adm:overview')],
   [InlineKeyboardButton(text='🧾 Transaksi',callback_data='adm:transactions'),InlineKeyboardButton(text='🔐 User Security',callback_data='adm:security')],
   [InlineKeyboardButton(text='🩺 System Health',callback_data='adm:health'),InlineKeyboardButton(text='🚨 Bot Errors',callback_data='adm:errors')],
   [InlineKeyboardButton(text='🔄 Refresh',callback_data='adm:panel')]])
@@ -81,12 +82,90 @@ def kb():
 async def panel_text():
     p=await get_pool()
     async def count(sql):
-        try: return await p.fetchval(sql) or 0
-        except Exception: return 0
+        try:
+            value=await p.fetchval(sql)
+            return int(value or 0)
+        except Exception:
+            return 0
     users=await count("SELECT COUNT(*) FROM users")
-    codes=await count("SELECT COUNT(*) FROM files WHERE active=TRUE")
-    pending=await count("SELECT COUNT(*) FROM manual_payments WHERE status='pending'")
-    return f"👑 <b>ADMIN PANEL</b>\n\n👥 Users: <b>{users}</b>\n🔑 Active Code: <b>{codes}</b>\n🧾 Manual Pending: <b>{pending}</b>\n\n🗄 B2: <b>{len(b2_pool.accounts)}/10</b>"
+    banned=await count("SELECT COUNT(*) FROM users WHERE banned=TRUE")
+    admins=await count("SELECT COUNT(*) FROM users WHERE is_admin=TRUE")
+    active_codes=await count("SELECT COUNT(*) FROM files WHERE active=TRUE")
+    inactive_codes=await count("SELECT COUNT(*) FROM files WHERE active=FALSE")
+    media=await count("SELECT COALESCE(SUM(media_count),0) FROM files")
+    pending_manual=await count("SELECT COUNT(*) FROM manual_payments WHERE status='pending'")
+    pending_orders=await count("SELECT COUNT(*) FROM purchases WHERE status IN ('pending','awaiting_payment','processing')")
+    vip_packages=await count("SELECT COUNT(*) FROM vip_packages WHERE active=TRUE")
+    errors=await count("SELECT COUNT(*) FROM error_logs WHERE created_at >= NOW()-INTERVAL '24 hours'")
+    try:
+        await b2_pool.reload_from_db()
+        b2_count=len(b2_pool.accounts)
+    except Exception:
+        b2_count=0
+    return ("👑 <b>ADMIN CONTROL CENTER</b>\n\n"
+            f"👥 Pengguna: <b>{users}</b> • 🚫 Diblokir: <b>{banned}</b> • 👮 Admin DB: <b>{admins}</b>\n"
+            f"🔑 Code aktif: <b>{active_codes}</b> • Nonaktif: <b>{inactive_codes}</b>\n"
+            f"📦 Total media terdaftar: <b>{media}</b>\n"
+            f"🧾 Order menunggu: <b>{pending_orders}</b> • QR manual pending: <b>{pending_manual}</b>\n"
+            f"💎 Paket VIP aktif: <b>{vip_packages}</b> • 🚨 Error 24 jam: <b>{errors}</b>\n"
+            f"🗄 B2 terkonfigurasi: <b>{b2_count}/10</b>\n\n"
+            "Pilih menu untuk mengelola data, pembayaran, media, VIP, storage, dan pengaturan bot.")
+
+@router.callback_query(F.data == 'adm:overview')
+async def admin_overview(c: CallbackQuery):
+    if not await admin_access(c.from_user.id):
+        return await c.answer('No access', show_alert=True)
+    p=await get_pool()
+    async def scalar(sql):
+        try:
+            value=await p.fetchval(sql)
+            return int(value or 0)
+        except Exception:
+            return 0
+    metrics = [
+        ('Pengguna total', "SELECT COUNT(*) FROM users"),
+        ('Pengguna aktif 7 hari', "SELECT COUNT(*) FROM users WHERE last_seen >= NOW()-INTERVAL '7 days'"),
+        ('Pengguna diblokir', "SELECT COUNT(*) FROM users WHERE banned=TRUE"),
+        ('Admin database', "SELECT COUNT(*) FROM users WHERE is_admin=TRUE"),
+        ('Code aktif', "SELECT COUNT(*) FROM files WHERE active=TRUE"),
+        ('Code nonaktif', "SELECT COUNT(*) FROM files WHERE active=FALSE"),
+        ('Media terdaftar', "SELECT COALESCE(SUM(media_count),0) FROM files"),
+        ('Pembelian berhasil', "SELECT COUNT(*) FROM purchases WHERE status IN ('paid','success','completed')"),
+        ('Order menunggu', "SELECT COUNT(*) FROM purchases WHERE status IN ('pending','awaiting_payment','processing')"),
+        ('Order gagal/kedaluwarsa', "SELECT COUNT(*) FROM purchases WHERE status IN ('failed','cancelled','canceled','expired')"),
+        ('QR manual pending', "SELECT COUNT(*) FROM manual_payments WHERE status='pending'"),
+        ('Paket VIP aktif', "SELECT COUNT(*) FROM vip_packages WHERE active=TRUE"),
+        ('Error 24 jam', "SELECT COUNT(*) FROM error_logs WHERE created_at >= NOW()-INTERVAL '24 hours'"),
+    ]
+    lines=['🔎 <b>DASHBOARD LENGKAP</b>']
+    for label,sql in metrics:
+        lines.append(f'• {label}: <b>{await scalar(sql)}</b>')
+    lines.append(f'• B2 aktif di runtime: <b>{len(b2_pool.accounts)}/10</b>')
+    try:
+        latest=await p.fetch("SELECT code,title,price_idr,active FROM files ORDER BY id DESC LIMIT 5")
+        lines.append('\n<b>Code terbaru</b>')
+        for row in latest:
+            price=int(row['price_idr'] or 0)
+            status='aktif' if row['active'] else 'nonaktif'
+            lines.append(f"• <code>{html.escape(str(row['code']))}</code> — {html.escape(str(row['title'] or '-'))} — Rp{price:,} — {status}".replace(',', '.'))
+    except Exception:
+        lines.append('\nCode terbaru: data tidak dapat dibaca.')
+    try:
+        recent=await p.fetch("SELECT id,user_id,amount,provider,status FROM purchases ORDER BY id DESC LIMIT 5")
+        lines.append('\n<b>Transaksi terbaru</b>')
+        for row in recent:
+            lines.append(f"• #{row['id']} user <code>{row['user_id']}</code> — Rp{int(row['amount'] or 0):,} — {html.escape(str(row['provider']))} — {html.escape(str(row['status']))}".replace(',', '.'))
+    except Exception:
+        lines.append('\nTransaksi terbaru: data tidak dapat dibaca.')
+    markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='🔄 Refresh',callback_data='adm:overview')],
+        [InlineKeyboardButton(text='🗂 Code',callback_data='adm:codes'),InlineKeyboardButton(text='👥 Users',callback_data='adm:users')],
+        [InlineKeyboardButton(text='🧾 Transaksi',callback_data='adm:transactions'),InlineKeyboardButton(text='🗄 B2',callback_data='adm:b2')],
+        [InlineKeyboardButton(text='🚨 Errors',callback_data='adm:errors'),InlineKeyboardButton(text='🩺 Health',callback_data='adm:health')],
+        [InlineKeyboardButton(text='🔙 Panel utama',callback_data='adm:panel')],
+    ])
+    await c.message.edit_text('\n'.join(lines)[:3900],parse_mode='HTML',reply_markup=markup)
+    await c.answer()
 
 @router.message(Command('panel'))
 async def panel(m):
@@ -1020,7 +1099,7 @@ async def admin_vip_channels(c):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
     from handlers.support import DEFAULT_VIP_CHANNELS, vip_channels
     rows=await vip_channels()
-    lines=['💎 <b>VIP CHANNEL LINKS</b>','Kelola daftar channel/link yang tampil pada /channelvip.']
+    lines=['🔗 <b>SETTING VIP GROUP</b>','Kelola link grup/channel VIP yang ditampilkan oleh perintah /vip. Terpisah dari paket berlangganan VIP Bot.']
     buttons=[]
     for i,r in enumerate(rows):
         lines.append(f"\n{i+1}. {html.escape(str(r.get('title','VIP')))}\n{html.escape(str(r.get('url','')))}")
@@ -1171,7 +1250,7 @@ async def admin_setting_save(m, state: FSMContext):
 async def admin_packages(c):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
     p=await get_pool(); rows=await p.fetch('SELECT code,name,price,duration_days,active,link_url FROM vip_packages ORDER BY price DESC')
-    buttons=[]; lines=['📦 <b>VIP PACKAGES</b>\n']
+    buttons=[]; lines=['💎 <b>SETTING VIP BOT — PAKET LANGGANAN</b>\n' ]
     for r in rows:
         state='ON' if r['active'] else 'OFF'
         lines.append(f"• <code>{html.escape(r['code'])}</code> — {html.escape(r['name'])} — Rp{int(r['price']):,} — {r['duration_days']} hari — {state} — {'LINK OK' if r['link_url'] else 'LINK BELUM DIISI'}".replace(',','.'))

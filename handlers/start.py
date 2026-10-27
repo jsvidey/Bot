@@ -1,5 +1,6 @@
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from database import get_pool
 from keyboards.menu import home_kb, channel_reply_kb, CHANNEL_ADMIN_URL, CHANNEL_UPDATE_URL
@@ -12,8 +13,8 @@ from utils.admin_access import admin_access
 router = Router()
 
 WELCOME = {
-    "id": "👋 Halo, {name}!\n\n📥 Kirim kode media untuk mulai.\n💎 Ketik /channelvip untuk melihat akses VIP.\n💬 Ketik /msg untuk chat admin.",
-    "en": "👋 Hello, {name}!\n\n📥 Send a media code to get started.\n💎 Use /channelvip to view VIP access.\n💬 Use /msg to chat with an admin.",
+    "id": "👋 Halo, {name}!\n\n📥 Kirim kode media untuk mulai.\n💎 Ketik /vip untuk melihat link grup VIP.\n💬 Ketik /msg untuk chat admin.",
+    "en": "👋 Hello, {name}!\n\n📥 Send a media code to get started.\n💎 Use /vip to view VIP group links.\n💬 Use /msg to chat with an admin.",
 }
 
 def language_kb():
@@ -146,13 +147,13 @@ async def reply_review(m: Message):
         parse_mode="HTML"
     )
 
-@router.message(F.chat.type == "private", F.text.in_({"📥 Buka Media", "📥 Open Media"}))
+@router.message(F.chat.type == "private", F.text.in_({"📥 Getfile", "📥 Buka Media", "📥 Open Media"}))
 async def reply_getfile(m: Message):
     lang = await get_lang(m.from_user.id) or "id"
     await m.bot.send_chat_action(m.chat.id, "typing")
     await m.answer("📥 Kirim kode media yang ingin dibuka." if lang == "id" else "📥 Send the media code you want to open.")
 
-@router.message(F.chat.type == "private", F.text == "💎 VIP")
+@router.message(F.chat.type == "private", F.text.in_({"💎 VIP Bot", "💎 VIP"}))
 async def reply_vip(m: Message):
     from database import get_pool
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -161,13 +162,19 @@ async def reply_vip(m: Message):
     rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_packages WHERE active ORDER BY price")
     buttons = [[InlineKeyboardButton(text=f"{r['name']} • Rp{int(r['price']):,}".replace(',', '.'), callback_data=f"vip:{r['code']}")] for r in rows]
     buttons += [[InlineKeyboardButton(text="🛍️ Ambil Sebagian",callback_data="vipsome")], [InlineKeyboardButton(text="🛒 Ambil Semua",callback_data="vipall")], [InlineKeyboardButton(text="ℹ️ About",callback_data="vipabout"),InlineKeyboardButton(text="🎁 Donasi",callback_data="vipdonate")]]
-    await m.answer("📚 <b>Daftar VVIP Bot</b>\n\nInfo Nilai\n<b>ALL VIP GROUP</b>\nKeterangan: Daftar paket eksklusif. Klik paket untuk detail lengkap dan penawaran spesial.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await m.answer("💎 <b>VIP BOT</b>\n\nPilih paket berlangganan VIP Bot di bawah ini. Link grup VIP tersedia melalui perintah /vip.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @router.message(F.chat.type == "private", F.text == "🔑 Code")
 async def reply_codes(m: Message):
     from handlers.misc import _render_code_command
     await m.bot.send_chat_action(m.chat.id, "typing")
     await _render_code_command(m, "all")
+
+
+@router.message(F.chat.type == "private", F.text == "💬 Support")
+async def reply_support(m: Message, state: FSMContext):
+    from handlers.support import msg_start
+    await msg_start(m, state)
 
 @router.message(F.chat.type == "private", F.text.in_({"❓ Bantuan", "❓ Help"}))
 async def reply_help(m: Message):
@@ -222,17 +229,17 @@ async def codetop(m: Message):
     from handlers.misc import _render_code_command
     await _render_code_command(m, "top")
 
-@router.message(F.chat.type == "private", Command("searchcode"))
+@router.message(F.chat.type == "private", Command("search", "searchcode"))
 async def searchcode(m: Message):
     parts = (m.text or "").split(maxsplit=1)
     if len(parts) < 2:
         lang = await get_lang(m.from_user.id) or "id"
-        await m.answer("Kirim /searchcode diikuti kode yang dicari." if lang == "id" else "Send /searchcode followed by the code to search.")
+        await m.answer("Kirim /search diikuti kode yang dicari." if lang == "id" else "Send /search followed by the code to search.")
         return
     from handlers.getfile import show
     await show(m, parts[1].strip())
 
-@router.message(F.chat.type == "private", Command("mypurchases"))
+@router.message(F.chat.type == "private", Command("mypurchases", "mypurchaces"))
 async def mypurchases(m: Message):
     lang = await get_lang(m.from_user.id) or "id"
     p = await get_pool()

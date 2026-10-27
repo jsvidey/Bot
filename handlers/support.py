@@ -54,7 +54,7 @@ async def render_channelvip(m: Message):
     lines += ['', '━━━━━━━━━━━━━━━━', '🚀 More VIP Groups Coming Soon!', '📢 Pantau update terbaru &amp; bantu share channel.', '🔗 ' + html.escape(str(await setting('vip_updates_url','https://t.me/+ezE2-f-YtEo4NzU1'))), '❤️‍🔥 Drop Your Reaction!', '⚡ LEARN • SHARE • GROW']
     await m.answer('\n'.join(lines), parse_mode='HTML', reply_markup=await vip_markup(rows))
 
-@router.message(F.chat.type == 'private', Command('channelvip'))
+@router.message(F.chat.type == 'private', Command('vip', 'channelvip'))
 async def channelvip_command(m: Message):
     await render_channelvip(m)
 
