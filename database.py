@@ -100,13 +100,46 @@ async def init_db():
       ('vip3','VIP 3 • 7 Hari',35000,7),
       ('vip4','VIP 4 • 2 Hari',25000,2)
     ON CONFLICT(code) DO NOTHING;
-    INSERT INTO vip_packages(code,name,price,duration_days,active) VALUES
-      ('premium_access','PREMIUM ACCES',100000,30,TRUE),
-      ('vip_bowceill','VIP BOWCEIL',50000,30,TRUE),
-      ('vip_vgk','VIP VGK',50000,30,TRUE)
-    ON CONFLICT(code) DO NOTHING;
     UPDATE vip_packages SET active=FALSE WHERE code IN ('vip1','vip2','vip3','vip4');
     ALTER TABLE vip_packages ADD COLUMN IF NOT EXISTS link_url TEXT NOT NULL DEFAULT '';
+
+    CREATE TABLE IF NOT EXISTS vip_group_packages(
+      code TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      price BIGINT NOT NULL CHECK(price >= 1000),
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      link_url TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT 'Dapatkan akses instan ke konten premium dan eksklusif setelah pembayaran berhasil.',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    -- Migrate the three group packages that older versions stored in vip_packages.
+    INSERT INTO vip_group_packages(code,name,price,active,link_url)
+      SELECT code,
+             CASE WHEN code='vip_bowceill' THEN 'VIP BOWCIEL'
+                  WHEN code='vip_vgk' THEN 'VIP VGK'
+                  WHEN code='premium_access' THEN 'PREMIUM ACCESS'
+                  ELSE name END,
+             CASE WHEN code='premium_access' AND price=100000 THEN 250000 ELSE price END,
+             active,link_url
+      FROM vip_packages WHERE code IN ('vip_bowceill','vip_vgk','premium_access')
+    ON CONFLICT(code) DO NOTHING;
+    INSERT INTO vip_group_packages(code,name,price,active,link_url)
+      SELECT defaults.code,defaults.name,defaults.price,TRUE,''
+      FROM (VALUES
+        ('vip_bowciel','VIP BOWCIEL',50000::BIGINT),
+        ('vip_vgk','VIP VGK',50000::BIGINT),
+        ('premium_access','PREMIUM ACCESS',250000::BIGINT)
+      ) AS defaults(code,name,price)
+      WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key='vip_group_packages_seeded')
+    ON CONFLICT(code) DO NOTHING;
+    INSERT INTO settings(key,value) VALUES('vip_group_packages_seeded','on') ON CONFLICT(key) DO NOTHING;
+    UPDATE vip_group_packages SET link_url=COALESCE(NULLIF(link_url,''),(SELECT link_url FROM vip_packages WHERE code='vip_bowceill'),'')
+      WHERE code='vip_bowciel';
+    DELETE FROM vip_group_packages WHERE code='vip_bowceill';
+    DELETE FROM vip_packages WHERE code IN ('vip_bowceill','vip_vgk','premium_access');
+    INSERT INTO vip_packages(code,name,price,duration_days,active,link_url)
+      VALUES('vipbot_1day','VIP Bot 1 Hari',25000,1,TRUE,'')
+    ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,price=EXCLUDED.price,duration_days=EXCLUDED.duration_days,active=TRUE;
 
     ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN NOT NULL DEFAULT FALSE;
