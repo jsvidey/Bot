@@ -13,8 +13,30 @@ from utils.admin_access import admin_access
 router = Router()
 
 WELCOME = {
-    "id": "👋 Halo, {name}!\n\n📥 Kirim kode media untuk mulai.\n💎 Ketik /vip untuk melihat link grup VIP.\n💬 Ketik /msg untuk chat admin.",
-    "en": "👋 Hello, {name}!\n\n📥 Send a media code to get started.\n💎 Use /vip to view VIP group links.\n💬 Use /msg to chat with an admin.",
+    "id": (
+        "👋 Halo, {name}!\n"
+        "📥 Kirim kode media untuk mulai.\n"
+        "🚀 Ketik /start untuk refresh bot.\n"
+        "👑 Ketik /vipbot untuk mendapatkan akses semua Code di bot.\n"
+        "💎 Ketik /vip untuk melihat akses Group VIP.\n"
+        "🔑 Ketik /code untuk melihat semua Code.\n\n"
+        "List group👇\n"
+        '<a href="https://t.me/+vM6UWm69_6gyMjNk">Channel Update</a>\n'
+        '<a href="https://t.me/noticsaluran">Channel Big Update Rare</a>\n'
+        '<a href="https://t.me/+ezE2-f-YtEo4NzU1">Pembuatan bot dan website</a>'
+    ),
+    "en": (
+        "👋 Hello, {name}!\n"
+        "📥 Send a media code to get started.\n"
+        "🚀 Type /start to refresh the bot.\n"
+        "👑 Type /vipbot to get access to all Codes in the bot.\n"
+        "💎 Type /vip to view VIP Group access.\n"
+        "🔑 Type /code to browse all Codes.\n\n"
+        "Group list👇\n"
+        '<a href="https://t.me/+vM6UWm69_6gyMjNk">Updates Channel</a>\n'
+        '<a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\n'
+        '<a href="https://t.me/+ezE2-f-YtEo4NzU1">Bot and Website Development</a>'
+    ),
 }
 
 def language_kb():
@@ -31,34 +53,24 @@ async def language_prompt(target, edit=False):
         await target.answer(text, parse_mode="HTML", reply_markup=language_kb())
 
 async def welcome_text(user, lang):
-    # Admin can customize each language from /admin -> Pesan Sambutan.
-    # The built-in message remains the fallback for fresh installs.
-    p = await get_pool()
-    key = "welcome_text_en" if lang == "en" else "welcome_text_id"
-    custom = await p.fetchval("SELECT value FROM settings WHERE key=$1", key)
-    # Custom messages are plain text so symbols like &, < and > cannot break HTML parsing.
-    # Built-in defaults may use Telegram HTML formatting.
     import html
-    is_custom = bool(custom and str(custom).strip())
-    template = str(custom).strip() if is_custom else WELCOME.get(lang, WELCOME["id"])
-    if is_custom:
-        template = html.escape(template)
+    template = WELCOME.get(lang, WELCOME["id"])
     name = html.escape(user.full_name or user.username or str(user.id))
     return template.replace("{name}", name)
 
 async def show_welcome(target, user, lang, edit=False, show_channels=True):
     text = await welcome_text(user, lang)
-    kb = await home_kb(user.id, lang)
+    # Welcome message contains clickable channel links in its text; no inline buttons.
     reply_kb = channel_reply_kb(lang)
     sent = None
     if edit:
         try:
-            await target.edit_text(text, parse_mode="HTML", reply_markup=kb)
+            await target.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
             sent = target
         except Exception:
-            sent = await target.answer(text, parse_mode="HTML", reply_markup=kb)
+            sent = await target.answer(text, parse_mode="HTML", disable_web_page_preview=True)
     else:
-        sent = await target.answer(text, parse_mode="HTML", reply_markup=kb)
+        sent = await target.answer(text, parse_mode="HTML", disable_web_page_preview=True)
     if show_channels:
         try:
             await target.bot.send_message(user.id, "⬇️ Menu" if lang == "id" else "⬇️ Menu", reply_markup=reply_kb)
@@ -116,7 +128,7 @@ async def choose_language(c: CallbackQuery):
 async def open_admin_channel(m: Message):
     lang = await get_lang(m.from_user.id) or "id"
     await m.answer(
-        ("📣 <b>Channel Admin</b>\\nTekan tautan untuk membuka channel admin." if lang != "en" else "📣 <b>Admin Channel</b>\\nTap the link to open the admin channel."),
+        ("📣 <b>Channel Admin</b>\nTekan tautan untuk membuka channel admin." if lang != "en" else "📣 <b>Admin Channel</b>\nTap the link to open the admin channel."),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📣 Buka Channel Admin" if lang != "en" else "📣 Open Admin Channel", url=CHANNEL_ADMIN_URL)]
@@ -127,7 +139,7 @@ async def open_admin_channel(m: Message):
 async def open_updates_channel(m: Message):
     lang = await get_lang(m.from_user.id) or "id"
     await m.answer(
-        ("📢 <b>Channel Update</b>\\nTekan tautan untuk membuka channel update." if lang != "en" else "📢 <b>Updates Channel</b>\\nTap the link to open the updates channel."),
+        ("📢 <b>Channel Update</b>\nTekan tautan untuk membuka channel update." if lang != "en" else "📢 <b>Updates Channel</b>\nTap the link to open the updates channel."),
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Buka Channel Update" if lang != "en" else "📢 Open Updates Channel", url=CHANNEL_UPDATE_URL)]
@@ -153,7 +165,7 @@ async def reply_getfile(m: Message):
     await m.bot.send_chat_action(m.chat.id, "typing")
     await m.answer("📥 Kirim kode media yang ingin dibuka." if lang == "id" else "📥 Send the media code you want to open.")
 
-@router.message(F.chat.type == "private", F.text.in_({"💎 VIP Bot", "💎 VIP"}))
+@router.message(F.chat.type == "private", F.text.in_({"👑 VIP Bot", "💎 VIP Bot", "💎 VIP"}))
 async def reply_vip(m: Message):
     from database import get_pool
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -164,7 +176,7 @@ async def reply_vip(m: Message):
     buttons += [[InlineKeyboardButton(text="🛍️ Ambil Sebagian",callback_data="vipsome")], [InlineKeyboardButton(text="🛒 Ambil Semua",callback_data="vipall")], [InlineKeyboardButton(text="ℹ️ About",callback_data="vipabout"),InlineKeyboardButton(text="🎁 Donasi",callback_data="vipdonate")]]
     await m.answer("💎 <b>VIP BOT</b>\n\nPilih paket berlangganan VIP Bot di bawah ini. Link grup VIP tersedia melalui perintah /vip.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@router.message(F.chat.type == "private", F.text == "🔑 Code")
+@router.message(F.chat.type == "private", F.text.in_({"🔑 Code", "🔑 Code"}))
 async def reply_codes(m: Message):
     from handlers.misc import _render_code_command
     await m.bot.send_chat_action(m.chat.id, "typing")
@@ -183,6 +195,23 @@ async def reply_help(m: Message):
     if lang not in {"id", "en"}: lang = "id"
     await m.bot.send_chat_action(m.chat.id, "typing")
     await m.answer(_help_pages(lang)[0], parse_mode="HTML", reply_markup=await _help_keyboard(lang, 0, m.from_user.id))
+
+
+
+@router.message(F.chat.type == "private", Command("vipbot"))
+async def vipbot_command(m: Message):
+    from handlers.misc import vipbot_menu
+    await vipbot_menu(m)
+
+@router.message(F.chat.type == "private", Command("vip"))
+async def vip_group_command(m: Message):
+    from handlers.misc import vip_group_menu
+    await vip_group_menu(m)
+
+@router.message(F.chat.type == "private", Command("code"))
+async def code_command(m: Message):
+    from handlers.misc import _render_code_command
+    await _render_code_command(m, "all")
 
 @router.message(F.chat.type == "private", Command("setting"))
 async def setting(m: Message):
