@@ -100,7 +100,6 @@ async def init_db():
       ('vip3','VIP 3 • 7 Hari',35000,7),
       ('vip4','VIP 4 • 2 Hari',25000,2)
     ON CONFLICT(code) DO NOTHING;
-    UPDATE vip_packages SET active=FALSE WHERE code IN ('vip1','vip2','vip3','vip4');
     ALTER TABLE vip_packages ADD COLUMN IF NOT EXISTS link_url TEXT NOT NULL DEFAULT '';
 
     CREATE TABLE IF NOT EXISTS vip_group_packages(
@@ -139,7 +138,13 @@ async def init_db():
     DELETE FROM vip_packages WHERE code IN ('vip_bowceill','vip_vgk','premium_access');
     INSERT INTO vip_packages(code,name,price,duration_days,active,link_url)
       VALUES('vipbot_1day','VIP Bot 1 Hari',25000,1,TRUE,'')
-    ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,price=EXCLUDED.price,duration_days=EXCLUDED.duration_days,active=TRUE;
+    ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,price=EXCLUDED.price,duration_days=EXCLUDED.duration_days;
+    -- Activate all five VIP Bot packages once. Later admin enable/disable choices are preserved.
+    INSERT INTO settings(key,value) VALUES('vipbot_all_packages_activated_v1','pending') ON CONFLICT(key) DO NOTHING;
+    UPDATE vip_packages SET active=TRUE
+      WHERE code IN ('vip1','vip2','vip3','vip4','vipbot_1day')
+        AND (SELECT value FROM settings WHERE key='vipbot_all_packages_activated_v1')='pending';
+    UPDATE settings SET value='done' WHERE key='vipbot_all_packages_activated_v1' AND value='pending';
 
     ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN NOT NULL DEFAULT FALSE;
