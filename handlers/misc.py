@@ -282,72 +282,42 @@ async def browsecode(c):
     )
 
 HELP_TEXTS={
-"id": """PANDUAN BOT DECODER
+"id": """📘 <b>BANTUAN BOT</b>
 
-START & BAHASA
-Tekan /start. Saat pertama kali menggunakan bot, bergabunglah dengan Channel Notifikasi dan Channel Backup, lalu tekan Verifikasi Join. Setelah itu pilih Indonesia atau English. Pilihan bahasa tersimpan dan dapat diganti kapan saja melalui /setting.
+<b>1. Mulai</b>
+Tekan /start untuk membuka menu. Pilih bahasa Indonesia atau English. Bahasa bisa diganti kapan saja lewat /setting.
 
-GET FILE
-Tekan Getfile atau kirim CODE yang ingin dibuka. Media dikirim ke chat pribadi, bukan ke grup. Pastikan CODE benar dan masih aktif.
+<b>2. Buka media</b>
+Tekan <b>📥 Buka Media</b> atau kirim CODE yang kamu punya. Ikuti petunjuk yang muncul.
 
-FREE CODE
-Code gratis dapat dibuka sesuai aturan akses yang berlaku.
+<b>3. Gratis atau berbayar</b>
+Jika Code gratis, ikuti petunjuk untuk membukanya. Jika berbayar, pilih metode pembayaran dan bayar sesuai nominal yang tertera. Media dapat diakses setelah pembayaran berhasil dikonfirmasi.
 
-PAID CODE
-Paid Code memiliki harga dalam Rupiah. Pilih salah satu metode QR yang tersedia. Jumlah pembayaran mengikuti harga Code. Akses akan aktif setelah pembayaran berhasil diverifikasi.
+<b>4. VIP</b>
+Tekan <b>💎 VIP</b> untuk melihat paket VIP yang tersedia. Akses mengikuti durasi dan ketentuan paket.
 
-PEMBAYARAN QR
-QR 1 adalah Cashi dan QR 2 adalah BayarGG. QR Manual dapat dipakai jika admin telah memasang QR dan mengaktifkan metode tersebut. Untuk QR Manual, bayar sesuai nominal lalu kirim bukti pembayaran agar admin dapat memeriksanya.
+<b>5. Ada masalah?</b>
+Periksa kembali CODE dan status pembayaran. Jika masih bermasalah, tekan <b>💬 Chat Admin</b> untuk meminta bantuan. Jangan bagikan PIN, kata sandi, atau kode keamanan.
 
-VIP
-VIP memberikan akses sesuai durasi, kuota, dan ketentuan paket yang dibeli. Tekan VIP untuk melihat paket yang tersedia. Akses tetap mengikuti aturan paket aktif.
+Pilih tombol bahasa di bawah untuk membaca panduan dalam bahasa lain.""",
+"en": """📘 <b>BOT HELP</b>
 
-CODE & REVIEW
-Tekan Code atau gunakan /codetop untuk melihat daftar Code populer. Gunakan /searchcode CODE untuk mencari Code tertentu. Pada halaman Code, gunakan Like, Hate, atau Favorite untuk memberikan penilaian.
+<b>1. Get started</b>
+Tap /start to open the menu. Choose Indonesian or English. You can change the language anytime with /setting.
 
-RIWAYAT PEMBELIAN
-Gunakan /mypurchases untuk melihat riwayat akses Paid Code yang pernah dibeli.
+<b>2. Open media</b>
+Tap <b>📥 Open Media</b> or send the CODE you have. Follow the instructions shown by the bot.
 
-UPLOAD (ADMIN/OWNER)
-Fitur Upfile hanya tersedia bagi admin/owner. Kirim media, judul, tag, lalu masukkan 0 untuk Code gratis atau harga untuk Paid Code.
+<b>3. Free or paid</b>
+For a free Code, follow the steps to open it. For a paid Code, choose a payment method and pay the exact amount shown. Access will be available after the payment is confirmed.
 
-MASALAH AKSES
-Akses sementara dapat kedaluwarsa sesuai aturan Code. Jika pembayaran berhasil tetapi akses belum terbuka, hubungi admin dan sertakan Code serta bukti transaksi. Jangan bagikan invoice atau informasi pembayaran kepada orang lain.
+<b>4. VIP</b>
+Tap <b>💎 VIP</b> to view available VIP packages. Access depends on the package duration and terms.
 
-Jika masih membutuhkan bantuan, tekan Help atau kembali ke menu utama.""",
-"en": """BOT DECODER GUIDE
+<b>5. Need help?</b>
+Check that the CODE is correct and review your payment status. If the problem continues, tap <b>💬 Message Admin</b> for help. Never share your PIN, password, or security codes.
 
-START & LANGUAGE
-Press /start. On your first use, join the Notification Channel and Backup Channel, then tap Verify Join. Choose Indonesian or English. Your choice is saved and can be changed anytime with /setting.
-
-GET FILE
-Tap Getfile or send the CODE you want to open. Media is delivered to your private chat, not to a group. Make sure the CODE is correct and still active.
-
-FREE CODE
-Free Codes can be opened according to the applicable access rules.
-
-PAID CODE
-Paid Codes have a price in Indonesian Rupiah. Choose an available QR payment method. The payment amount matches the Code price. Access becomes active after payment is verified successfully.
-
-QR PAYMENTS
-QR 1 is Cashi and QR 2 is BayarGG. Manual QR is available if the admin has configured and enabled it. For Manual QR, pay the exact amount and submit proof so the admin can review it.
-
-VIP
-VIP provides access according to the purchased package duration, quota, and terms. Tap VIP to see available packages. Access remains subject to the active package rules.
-
-CODE & REVIEWS
-Tap Code or use /codetop to view popular Codes. Use /searchcode CODE to find a specific Code. On a Code page, use Like, Hate, or Favorite to rate it.
-
-PURCHASE HISTORY
-Use /mypurchases to view your previously purchased Paid Code access.
-
-UPLOAD (ADMIN/OWNER)
-Upfile is available only to admins/owner. Send media, title, and tags, then enter 0 for a free Code or a price for a Paid Code.
-
-ACCESS ISSUES
-Temporary access may expire according to the Code rules. If payment succeeds but access does not open, contact the admin and include the Code and transaction proof. Do not share invoices or payment details with others.
-
-For more help, tap Help or return to the main menu."""
+Use the language buttons below to read this guide in another language."""
 }
 
 
