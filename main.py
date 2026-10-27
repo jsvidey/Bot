@@ -19,7 +19,8 @@ async def lifespan(app):
   await bot.set_my_commands([
    BotCommand(command="start", description="Mulai / Start bot"),
    BotCommand(command="vipbot", description="Paket VIP Bot / VIP Bot packages"),
-   BotCommand(command="vip", description="Akses grup VIP / VIP group access"),
+   BotCommand(command="vip", description="Pilih akses VIP / Choose VIP access"),
+   BotCommand(command="group", description="Link grup dan channel / Group and channel links"),
    BotCommand(command="code", description="Daftar Code / Browse Codes"),
    BotCommand(command="mypurchaces", description="Riwayat pembelian / My purchases"),
    BotCommand(command="codetop", description="Top 10 Code"),
@@ -29,7 +30,8 @@ async def lifespan(app):
   await bot.set_my_commands([
    BotCommand(command="start", description="Start the bot"),
    BotCommand(command="vipbot", description="VIP Bot packages"),
-   BotCommand(command="vip", description="VIP group access"),
+   BotCommand(command="vip", description="Choose VIP access"),
+   BotCommand(command="group", description="Group and channel links"),
    BotCommand(command="code", description="Browse all Codes"),
    BotCommand(command="mypurchaces", description="Purchase history"),
    BotCommand(command="codetop", description="Top 10 Codes"),
