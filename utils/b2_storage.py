@@ -80,10 +80,15 @@ class B2Pool:
             aws_secret_access_key=app_key,
             config=BotoConfig(
                 signature_version="s3v4",
-                connect_timeout=30,
+                connect_timeout=20,
                 read_timeout=REQUEST_TIMEOUT,
-                retries={"max_attempts": 5, "mode": "standard"},
-                s3={"addressing_style": "path"},
+                max_pool_connections=4,
+                tcp_keepalive=True,
+                retries={"max_attempts": 4, "mode": "standard"},
+                s3={
+                    "addressing_style": "path",
+                    "payload_signing_enabled": True,
+                },
             ),
         )
         return B2Account(
@@ -232,31 +237,21 @@ class B2Pool:
                         if mime:
                             extra["ContentType"] = mime
 
-                        if extra:
-                            await asyncio.to_thread(
-                                account.client.upload_file,
-                                snapshot,
-                                account.bucket,
-                                object_key,
-                                ExtraArgs=extra,
-                                Config=TransferConfig(
-                                    multipart_threshold=64 * 1024 * 1024,
-                                    max_concurrency=1,
-                                    use_threads=False,
-                                ),
-                            )
-                        else:
-                            await asyncio.to_thread(
-                                account.client.upload_file,
-                                snapshot,
-                                account.bucket,
-                                object_key,
-                                Config=TransferConfig(
-                                    multipart_threshold=64 * 1024 * 1024,
-                                    max_concurrency=1,
-                                    use_threads=False,
-                                ),
-                            )
+                        # Files handled by this bot are limited to 20 MiB, so use
+                        # one signed PutObject request instead of transfer-manager uploads.
+                        def put_object():
+                            with open(snapshot, "rb") as body:
+                                kwargs = {
+                                    "Bucket": account.bucket,
+                                    "Key": object_key,
+                                    "Body": body,
+                                    "ContentLength": size,
+                                }
+                                if mime:
+                                    kwargs["ContentType"] = mime
+                                return account.client.put_object(**kwargs)
+
+                        await asyncio.to_thread(put_object)
 
                         head = await asyncio.to_thread(
                             account.client.head_object,
