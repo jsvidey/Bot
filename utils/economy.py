@@ -14,13 +14,42 @@ async def is_vip(uid):
     return bool(await p.fetchval("SELECT vip AND (vip_until IS NULL OR vip_until>NOW()) FROM users WHERE user_id=$1",uid) or False)
 
 async def vip_allowed(uid,code):
-    if not await is_vip(uid): return True
+    """Whether this VIP/VVIP user may reopen the same code after its tier cooldown."""
     p=await get_pool()
-    r=await p.fetchval("SELECT opened_at FROM code_cooldowns WHERE user_id=$1 AND code=$2",uid,code)
-    if not r: return True
-    try: minutes=int(await p.fetchval("SELECT value FROM settings WHERE key='vip_code_delay_minutes'") or 30)
-    except: minutes=30
-    return datetime.now(timezone.utc)-r.replace(tzinfo=timezone.utc) >= timedelta(minutes=minutes)
+    user=await p.fetchrow(
+        "SELECT vip_tier FROM users WHERE user_id=$1 AND vip=TRUE AND (vip_until IS NULL OR vip_until>NOW())",
+        uid,
+    )
+    if not user:
+        return True
+    tier=str(user["vip_tier"] or "vip").lower()
+    setting="vvip_code_delay_minutes" if tier=="vvip" else "vip_code_delay_minutes"
+    try:
+        minutes=int(await p.fetchval("SELECT value FROM settings WHERE key=$1",setting) or (15 if tier=="vvip" else 30))
+    except Exception:
+        minutes=15 if tier=="vvip" else 30
+    opened=await p.fetchval("SELECT opened_at FROM code_cooldowns WHERE user_id=$1 AND code=$2",uid,code)
+    if not opened or minutes <= 0:
+        return True
+    return datetime.now(timezone.utc)-opened.replace(tzinfo=timezone.utc) >= timedelta(minutes=minutes)
+
+
+async def vip_cooldown_remaining(uid,code):
+    p=await get_pool()
+    user=await p.fetchrow(
+        "SELECT vip_tier FROM users WHERE user_id=$1 AND vip=TRUE AND (vip_until IS NULL OR vip_until>NOW())",
+        uid,
+    )
+    if not user: return 0
+    tier=str(user["vip_tier"] or "vip").lower()
+    setting="vvip_code_delay_minutes" if tier=="vvip" else "vip_code_delay_minutes"
+    default=15 if tier=="vvip" else 30
+    try: minutes=int(await p.fetchval("SELECT value FROM settings WHERE key=$1",setting) or default)
+    except Exception: minutes=default
+    opened=await p.fetchval("SELECT opened_at FROM code_cooldowns WHERE user_id=$1 AND code=$2",uid,code)
+    if not opened or minutes<=0: return 0
+    remaining=timedelta(minutes=minutes)-(datetime.now(timezone.utc)-opened.replace(tzinfo=timezone.utc))
+    return max(0,int(remaining.total_seconds()+59)//60)
 
 async def vip_daily_limit_for_days(days):
     """Daily code-open allowance for each VIP package duration."""

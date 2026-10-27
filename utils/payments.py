@@ -324,16 +324,23 @@ async def finalize_purchase(invoice,status_amount=None):
                 raise ValueError("Legacy point/star purchases are disabled")
             elif typ=="vip":
                 days=int(qty)
+                package_codes=[str(x) for x in (meta.get("vip_package_codes") or []) if str(x).strip()]
+                package=None
+                if package_codes and not meta.get("vip_group_package_codes"):
+                    package=await c.fetchrow(
+                        "SELECT tier,daily_limit,duration_days FROM vip_packages WHERE code=$1",
+                        package_codes[0],
+                    )
+                tier=str(package["tier"] or "vip") if package else "vip"
+                daily_limit=int(package["daily_limit"] or 0) if package else 0
+                if daily_limit<=0:
+                    daily_limit={1:2,3:4,4:3,5:6,7:4,10:10,15:5,30:30}.get(days,max(2,days))
                 await c.execute("""
                     UPDATE users SET vip=TRUE,
                     vip_until=GREATEST(COALESCE(vip_until,NOW()),NOW())+($1||' days')::interval,
-                    vip_plan_days=$1,
-                    vip_daily_limit=CASE
-                        WHEN $1=1 THEN 2 WHEN $1=3 THEN 4 WHEN $1=5 THEN 6
-                        WHEN $1=7 THEN 7 WHEN $1=10 THEN 10 WHEN $1=15 THEN 15
-                        WHEN $1=30 THEN 30 ELSE GREATEST($1,2) END
-                    WHERE user_id=$2
-                """,days,db_uid)
+                    vip_plan_days=$1,vip_daily_limit=$2,vip_tier=$3
+                    WHERE user_id=$4
+                """,days,daily_limit,tier,db_uid)
             elif typ=="file":
                 code=str(meta.get("code") or "")
                 price=int(file_row["price_idr"] or expected)
