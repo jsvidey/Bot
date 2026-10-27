@@ -266,27 +266,40 @@ async def finalize_purchase(invoice,status_amount=None):
             if row["status"]!="pending":return False
 
             expected=int(row["amount"] or 0)
-            # A successful status without a settled amount is not enough to
-            # activate VIP or unlock a paid code. This prevents status-only or
-            # malformed callbacks from granting paid access.
-            if status_amount is None:
-                log.error("PAYMENT AMOUNT MISSING invoice=%s expected=%s", invoice, expected)
-                return False
             meta=_norm_meta(row["metadata"])
             accepted={expected}
             try:
-                if meta.get("final_amount") is not None:accepted.add(int(float(meta["final_amount"])))
-            except Exception:pass
-            if status_amount is not None:
+                if meta.get("final_amount") is not None:
+                    accepted.add(int(float(meta["final_amount"])))
+            except Exception:
+                pass
+            # Cashi's check-status endpoint can confirm a paid order while
+            # omitting the settled amount from its response. In that specific
+            # case, use the final amount recorded when THIS invoice was created.
+            # Callers only reach this function from a successful provider status
+            # check; signed webhooks still must supply their own amount.
+            if status_amount in (None, "", 0, "0") and str(row["provider"] or "").lower() == "cashi":
+                recorded = meta.get("final_amount")
                 try:
-                    actual=int(float(status_amount))
-                except (TypeError,ValueError):
-                    return False
-                # Gateway fees may make the settled amount higher, but never
-                # accept an amount below the local order amount.
-                if actual < expected:
-                    log.error("PAYMENT AMOUNT MISMATCH invoice=%s expected=%s actual=%s accepted=%s",invoice,expected,actual,accepted)
-                    return False
+                    recorded = int(float(recorded)) if recorded is not None else 0
+                except (TypeError, ValueError):
+                    recorded = 0
+                if recorded > 0:
+                    status_amount = recorded
+                    log.warning("CASHI AMOUNT FALLBACK TO RECORDED ORDER AMOUNT invoice=%s amount=%s", invoice, recorded)
+            if status_amount is None or status_amount == "":
+                log.error("PAYMENT AMOUNT MISSING invoice=%s expected=%s provider=%s", invoice, expected, row["provider"])
+                return False
+            try:
+                actual=int(float(status_amount))
+            except (TypeError,ValueError):
+                log.error("PAYMENT AMOUNT INVALID invoice=%s value=%r", invoice, status_amount)
+                return False
+            # Accept only the exact local order amount or the exact final amount
+            # returned/stored for this invoice; do not accept arbitrary overpayment.
+            if actual <= 0 or actual not in accepted:
+                log.error("PAYMENT AMOUNT MISMATCH invoice=%s expected=%s actual=%s accepted=%s",invoice,expected,actual,accepted)
+                return False
 
             typ=row["purchase_type"]; db_uid=row["user_id"]; qty=row["quantity"]
             db_uid=await _coerce_native_user_id(c, db_uid)

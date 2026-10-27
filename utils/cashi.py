@@ -23,9 +23,42 @@ def _amount(v, default=0):
     try:
         if v is None or v == "":
             return int(default)
-        return int(float(v))
+        # Do not treat booleans as numeric amounts.
+        if isinstance(v, bool):
+            return int(default)
+        return int(float(str(v).replace(",", "").strip()))
     except (TypeError, ValueError):
         return int(default)
+
+_AMOUNT_KEYS = (
+    "paid_amount", "paidAmount", "amount_paid", "amountPaid",
+    "settled_amount", "settledAmount", "transaction_amount", "transactionAmount",
+    "total_amount", "totalAmount", "gross_amount", "grossAmount",
+    "final_amount", "finalAmount", "amount", "nominal", "paid_nominal",
+)
+
+def _find_amount(value, depth=0):
+    """Find a provider amount in common Cashi response envelopes."""
+    if depth > 6:
+        return None
+    if isinstance(value, dict):
+        # Prefer explicit paid/settled/final amount fields over generic amount.
+        for key in _AMOUNT_KEYS:
+            if key in value and value[key] not in (None, "", False):
+                amount = _amount(value[key], 0)
+                if amount > 0:
+                    return amount
+        for child in value.values():
+            if isinstance(child, (dict, list)):
+                amount = _find_amount(child, depth + 1)
+                if amount:
+                    return amount
+    elif isinstance(value, list):
+        for child in value:
+            amount = _find_amount(child, depth + 1)
+            if amount:
+                return amount
+    return None
 
 def _parse_dt(v):
     if not v:
@@ -99,22 +132,22 @@ class Cashi:
                 logger.error("CASHI CHECK HTTP %s | %s",r.status_code,raw)
                 return None
             d=_unwrap(raw)
-            status=_status(
-                d.get("status") or d.get("payment_status") or
-                d.get("paymentStatus") or d.get("transaction_status") or
-                d.get("event")
+            status_value = (
+                d.get("status") or d.get("payment_status") or d.get("paymentStatus") or
+                d.get("transaction_status") or d.get("transactionStatus") or
+                d.get("payment_state") or d.get("paymentState") or d.get("event")
             )
-            amount=_amount(d.get("amount"),0)
-            if not amount:
-                amount=_amount(d.get("paid_amount"),0)
-            if not amount:
-                amount=_amount(d.get("final_amount"),0)
+            status=_status(status_value)
+            amount=_find_amount(raw)
+            # Log only the shape/status and whether a numeric amount was found;
+            # avoid dumping potentially sensitive provider payloads into Railway logs.
+            logger.info("CASHI CHECK parsed invoice=%s status=%s amount_found=%s", order_id, status, bool(amount))
             return {
                 "invoice_id":str(d.get("order_id") or d.get("orderId") or d.get("invoice_id") or order_id),
                 "status":status,
                 "amount":amount,
                 "final_amount":amount,
-                "paid_at":d.get("paid_at"),
+                "paid_at":d.get("paid_at") or d.get("paidAt") or d.get("settled_at"),
                 "raw":d,
             }
         except Exception:
