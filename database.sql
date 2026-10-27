@@ -18,11 +18,12 @@ CREATE TABLE IF NOT EXISTS users(
 ALTER TABLE users ADD COLUMN IF NOT EXISTS subscription_notice_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS vip_plan_days INT NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS vip_daily_limit INT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS vip_tier TEXT NOT NULL DEFAULT 'vip';
 
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL DEFAULT '');
 INSERT INTO settings(key,value) VALUES
  ('payment_bayargg_enabled','on'),('payment_cashi_enabled','on'),('payment_manual_enabled','on'),
-('maintenance','off'),('vip_code_delay_minutes','30'),('media_send_delay_ms','2000'),
+('maintenance','off'),('vip_code_delay_minutes','30'),('vvip_code_delay_minutes','15'),('media_send_delay_ms','2000'),('vip_media_send_delay_ms','2000'),('vvip_media_send_delay_ms','1000'),
  ('manual_qr_file_id',''),('preferred_b2_account','0'),('default_watermark_enabled','on'),('watermark_text',''),('admin_chat_enabled','on'),('vip_channels_json',''),('vip_updates_url','https://t.me/+ezE2-f-YtEo4NzU1')
  ON CONFLICT(key) DO NOTHING;
 
@@ -97,6 +98,9 @@ CREATE TABLE IF NOT EXISTS vip_packages(
  code TEXT PRIMARY KEY,name TEXT NOT NULL,price BIGINT NOT NULL,duration_days INT NOT NULL DEFAULT 30,active BOOLEAN NOT NULL DEFAULT TRUE,link_url TEXT NOT NULL DEFAULT ''
 );
 ALTER TABLE vip_packages ADD COLUMN IF NOT EXISTS link_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE vip_packages ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'vip';
+ALTER TABLE vip_packages ADD COLUMN IF NOT EXISTS daily_limit INT NOT NULL DEFAULT 2;
+UPDATE vip_packages SET tier='vip' WHERE tier IS NULL OR tier NOT IN ('vip','vvip');
 INSERT INTO vip_packages(code,name,price,duration_days,active) VALUES
  ('vip1','VIP 1 • 30 Hari',100000,30,TRUE),
  ('vip2','VIP 2 • 15 Hari',50000,15,TRUE),
@@ -110,6 +114,23 @@ UPDATE vip_packages SET active=TRUE
  WHERE code IN ('vip1','vip2','vip3','vip4','vipbot_1day')
    AND (SELECT value FROM settings WHERE key='vipbot_all_packages_activated_v1')='pending';
 UPDATE settings SET value='done' WHERE key='vipbot_all_packages_activated_v1' AND value='pending';
+INSERT INTO settings(key,value) VALUES('vipbot_vip_vvip_seed_v1','pending') ON CONFLICT(key) DO NOTHING;
+UPDATE vip_packages SET active=FALSE WHERE (SELECT value FROM settings WHERE key='vipbot_vip_vvip_seed_v1')='pending';
+INSERT INTO vip_packages(code,name,price,duration_days,active,link_url,tier,daily_limit)
+SELECT defaults.code,defaults.name,defaults.price,defaults.duration_days,TRUE,'',defaults.tier,defaults.daily_limit
+FROM (VALUES
+  ('vip_1d','VIP 1 Hari',15000,1,'vip',2),
+  ('vip_4d','VIP 4 Hari',30000,4,'vip',3),
+  ('vip_7d','VIP 7 Hari',50000,7,'vip',4),
+  ('vip_15d','VIP 15 Hari',55000,15,'vip',5),
+  ('vvip_1d','VVIP 1 Hari',20000,1,'vvip',3),
+  ('vvip_4d','VVIP 4 Hari',40000,4,'vvip',5),
+  ('vvip_7d','VVIP 7 Hari',60000,7,'vvip',8),
+  ('vvip_15d','VVIP 15 Hari',75000,15,'vvip',10)
+) AS defaults(code,name,price,duration_days,tier,daily_limit)
+WHERE (SELECT value FROM settings WHERE key='vipbot_vip_vvip_seed_v1')='pending'
+ON CONFLICT(code) DO NOTHING;
+UPDATE settings SET value='done' WHERE key='vipbot_vip_vvip_seed_v1' AND value='pending';
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS can_unlock BOOLEAN NOT NULL DEFAULT TRUE;
