@@ -45,9 +45,9 @@ def _t(lang, key, **kw):
             "zh": "📤 <b>上传文件</b>",
         },
         "up_start": {
-            "id": "Kirim maksimal <b>{max}</b> media.\nMedia sampai 20 MB wajib tersimpan ke Backblaze B2 dan menyimpan Telegram file_id sebagai cadangan. Media di atas 20 MB memakai Telegram file_id. Jika upload B2 gagal, media kecil dilewati.\nSetelah selesai tekan <b>✅ Selesai Upload</b>.",
-            "en": "Send up to <b>{max}</b> media files.\nMedia up to 20 MB must be saved to Backblaze B2 and also keeps its Telegram file_id. Media above 20 MB uses the Telegram file_id. If B2 upload fails, the small media is skipped.\nWhen finished, press <b>✅ Finish Upload</b>.",
-            "zh": "最多发送 <b>{max}</b> 个媒体文件。\n20 MB 以内的媒体必须保存到 Backblaze B2，同时保留 Telegram file_id。超过 20 MB 的媒体使用 Telegram file_id。若 B2 上传失败，则跳过该小文件。\n完成后点击 <b>✅ 完成上传</b>。",
+            "id": "Kirim maksimal <b>{max}</b> media.\nMedia sampai 20 MB akan diunggah ke Backblaze B2 dan tetap menyimpan Telegram file_id sebagai cadangan. Media di atas 20 MB memakai Telegram file_id. Jika upload B2 gagal, Telegram file_id tetap digunakan.\nSetelah selesai tekan <b>✅ Selesai Upload</b>.",
+            "en": "Send up to <b>{max}</b> media files.\nMedia up to 20 MB is uploaded to Backblaze B2 while keeping its Telegram file_id as fallback. Media above 20 MB uses the Telegram file_id. If B2 upload fails, the Telegram file_id is still used.\nWhen finished, press <b>✅ Finish Upload</b>.",
+            "zh": "最多发送 <b>{max}</b> 个媒体文件。\n20 MB 以内的媒体会上传到 Backblaze B2，同时保留 Telegram file_id 作为备用。超过 20 MB 的媒体使用 Telegram file_id。若 B2 上传失败，仍会使用 Telegram file_id。\n完成后点击 <b>✅ 完成上传</b>。",
         },
         "finish": {"id":"✅ Selesai Upload","en":"✅ Finish Upload","zh":"✅ 完成上传"},
         "cancel": {"id":"❌ Batal","en":"❌ Cancel","zh":"❌ 取消"},
@@ -69,9 +69,9 @@ def _t(lang, key, **kw):
             "zh":"点击 <b>✅ 完成上传</b> 继续。",
         },
         "b2_unavailable": {
-            "id":"⚠️ B2 tidak tersedia. Media di bawah 20 MB dilewati dan tidak akan disimpan/publikasi.",
-            "en":"⚠️ B2 is unavailable. Media under 20 MB is skipped and will not be saved/published.",
-            "zh":"⚠️ B2 不可用。20 MB 以下的媒体将被跳过，不会保存或发布。",
+            "id":"⚠️ B2 tidak tersedia. Telegram file_id akan dipakai sebagai cadangan.",
+            "en":"⚠️ B2 is unavailable. Telegram file_id will be used as fallback.",
+            "zh":"⚠️ B2 不可用。将使用 Telegram file_id 作为备用。",
         },
         "loading": {
             "id":"⏳ <b>Loading…</b>\n\n📤 Menyimpan media <b>{n}/{max}</b>",
@@ -227,20 +227,25 @@ async def receive(m,state):
             # Small media still goes to B2 when available. If B2 is unavailable,
             # keep the Telegram file_id instead of rejecting the upload.
             if not b2_pool.available:
-                # Small files must be saved to B2 before they are accepted.
-                # Never keep a file_id-only fallback for a <=20 MiB upload.
+                # B2 is unavailable: retain Telegram file_id instead of skipping media.
+                fallback = file_id_record()
+                fallback["storage_status"] = "b2_unavailable_telegram_fallback"
+                media.append(fallback)
                 await state.update_data(media=media)
                 if status_id:
                     try:
                         await m.bot.edit_message_text(
-                            chat_id=m.chat.id,message_id=status_id,
+                            chat_id=m.chat.id, message_id=status_id,
                             text=(_t(lang, "up_title") + "\n\n" +
                                   _t(lang, "received", n=len(media), max=MAX_MEDIA) + "\n\n" +
                                   _t(lang, "b2_unavailable")),
-                            parse_mode='HTML',reply_markup=_media_kb(lang))
-                    except: pass
-                try: await m.delete()
-                except: pass
+                            parse_mode="HTML", reply_markup=_media_kb(lang))
+                    except Exception:
+                        pass
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
                 return
 
             if status_id:
