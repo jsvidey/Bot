@@ -20,18 +20,16 @@ def channel_reply_kb(lang: str = "id", is_admin: bool = False):
     """Persistent keyboard under the chat input: main menu actions."""
     en = lang == "en"
     labels = [
-        KeyboardButton(text="⭐ Review"),
-        KeyboardButton(text="📥 Buka Media" if not en else "📥 Open Media"),
-        KeyboardButton(text="💎 VIP"),
+        KeyboardButton(text="💎 VIP Bot"),
+        KeyboardButton(text="📥 Getfile"),
         KeyboardButton(text="🔑 Code"),
-        KeyboardButton(text="💎 VIP Access"),
-        KeyboardButton(text="💬 Chat Admin" if not en else "💬 Message Admin"),
-        KeyboardButton(text="❓ Bantuan" if not en else "❓ Help"),
+        KeyboardButton(text="💬 Support"),
+        KeyboardButton(text="❓ Help"),
     ]
-    rows = [[labels[0], labels[1]], [labels[2], labels[3]], [labels[4], labels[5]], [labels[6]]]
+    rows = [[labels[0], labels[1]], [labels[2], labels[3]], [labels[4]]]
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Kirim kode media atau pilih menu…" if not en else "Send a media code or choose a menu…",
+        input_field_placeholder="Pilih menu atau kirim kode media…" if not en else "Choose a menu or send a media code…",
     )
