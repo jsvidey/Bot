@@ -167,6 +167,8 @@ async def create_purchase(uid,typ,qty,amount,provider,name,metadata=None):
             continue
         if metadata.get("vip_package_codes") and sorted(map(str, oldmeta.get("vip_package_codes") or [])) != sorted(map(str, metadata.get("vip_package_codes") or [])):
             continue
+        if metadata.get("vip_group_package_codes") and sorted(map(str, oldmeta.get("vip_group_package_codes") or [])) != sorted(map(str, metadata.get("vip_group_package_codes") or [])):
+            continue
         inv=str(old["invoice_id"] or "")
         if inv:
             try:
@@ -365,15 +367,17 @@ async def finalize_purchase(invoice,status_amount=None):
                 log.error("paid file purchase has no code invoice=%s", invoice)
                 await bot.send_message(uid, '✅ <b>Payment successful</b>\n📥 Payment confirmed, but the code is missing. Please contact admin.', parse_mode="HTML")
         elif typ=="vip":
-            package_codes = [str(x) for x in (meta.get("vip_package_codes") or []) if str(x).strip()]
+            is_group_vip = bool(meta.get("vip_group_package_codes"))
+            package_codes = [str(x) for x in (meta.get("vip_group_package_codes") if is_group_vip else meta.get("vip_package_codes") or []) if str(x).strip()]
             package_rows = []
             if package_codes:
+                table = "vip_group_packages" if is_group_vip else "vip_packages"
                 package_rows = await (await get_pool()).fetch(
-                    "SELECT code,name,link_url FROM vip_packages WHERE code=ANY($1::text[]) ORDER BY price DESC", package_codes
+                    f"SELECT code,name,link_url FROM {table} WHERE code=ANY($1::text[]) ORDER BY price DESC", package_codes
                 )
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
             link_buttons = []
-            lines = ["💎 <b>Pembayaran VIP berhasil!</b>", f"Durasi akses bot: <b>{int(qty)} hari</b>.", ""]
+            lines = (["💎 <b>Pembayaran VIP Group berhasil!</b>", "Link akses grup dikirimkan di bawah ini.", ""] if is_group_vip else ["💎 <b>Pembayaran VIP berhasil!</b>", f"Durasi akses bot: <b>{int(qty)} hari</b>.", ""])
             for package in package_rows:
                 lines.append(f"📦 {html.escape(str(package['name']))}")
                 link = str(package['link_url'] or '').strip()
