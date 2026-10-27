@@ -284,12 +284,21 @@ async def _delete_stale_messages(bot, chat_id, keep_id=None):
     _TRACKED_MESSAGES[chat_id] = kept
 
 class MessageTrackerMiddleware:
-    """Track bot replies and clear stale bot messages when a callback is clicked."""
+    """Clear stale bot text prompts when a user replies with a new message.
+
+    This only deletes recent messages sent by the bot; Telegram bots cannot
+    reliably delete a user's own private-chat messages.
+    """
     async def __call__(self, handler, event, data):
-        result = await handler(event, data)
-        # We intentionally don't delete before the handler: the callback
-        # handler often edits event.message in place.
-        return result
+        if isinstance(event, Message) and getattr(event.chat, "type", None) == "private":
+            try:
+                await _delete_stale_messages(event.bot, event.chat.id)
+            except Exception:
+                pass
+        return await handler(event, data)
+
+dp.message.middleware(MessageTrackerMiddleware())
+
 
 class ButtonLoadingMiddleware:
     """Show loading directly inside the clicked inline button.

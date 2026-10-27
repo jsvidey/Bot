@@ -92,7 +92,7 @@ async def init_db():
 
     CREATE TABLE IF NOT EXISTS vip_packages(
       code TEXT PRIMARY KEY, name TEXT NOT NULL, price BIGINT NOT NULL,
-      duration_days INT NOT NULL DEFAULT 30, active BOOLEAN NOT NULL DEFAULT TRUE
+      duration_days INT NOT NULL DEFAULT 30, active BOOLEAN NOT NULL DEFAULT TRUE, link_url TEXT NOT NULL DEFAULT ''
     );
     INSERT INTO vip_packages(code,name,price,duration_days) VALUES
       ('vip1','VIP 1 • 30 Hari',100000,30),
@@ -100,6 +100,13 @@ async def init_db():
       ('vip3','VIP 3 • 7 Hari',35000,7),
       ('vip4','VIP 4 • 2 Hari',25000,2)
     ON CONFLICT(code) DO NOTHING;
+    INSERT INTO vip_packages(code,name,price,duration_days,active) VALUES
+      ('premium_access','PREMIUM ACCES',100000,30,TRUE),
+      ('vip_bowceill','VIP BOWCEIL',50000,30,TRUE),
+      ('vip_vgk','VIP VGK',50000,30,TRUE)
+    ON CONFLICT(code) DO NOTHING;
+    UPDATE vip_packages SET active=FALSE WHERE code IN ('vip1','vip2','vip3','vip4');
+    ALTER TABLE vip_packages ADD COLUMN IF NOT EXISTS link_url TEXT NOT NULL DEFAULT '';
 
     ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN NOT NULL DEFAULT FALSE;
