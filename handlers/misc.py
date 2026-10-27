@@ -1,4 +1,5 @@
 from aiogram import Router,F
+from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -124,9 +125,9 @@ async def _code_text_row(r, prefix=""):
 async def _render_code_command(m: Message, mode: str = "top"):
     if mode == "all":
         lang = await get_lang(m.from_user.id) or "id"
-        text = ("🗂 <b>PILIH SERVER</b>\\nPilih server untuk mencari code media:"
+        text = ("🗂 <b>PILIH SERVER</b>\nPilih server untuk mencari code media:"
                 if lang == "id" else
-                "🗂 <b>CHOOSE A SERVER</b>\\nChoose a server to search media codes:")
+                "🗂 <b>CHOOSE A SERVER</b>\nChoose a server to search media codes:")
         await m.answer(text, parse_mode="HTML", reply_markup=await _server_keyboard(m.from_user.id))
         return
     rows, total = await _paged_codes(0, mode, 10)
@@ -216,8 +217,8 @@ async def serverbrowse(c):
     if (page+1)*10<total: nav.append(InlineKeyboardButton(text="➡️",callback_data=f"serverbrowse:{no}:{page+1}"))
     buttons.append(nav)
     buttons.append([InlineKeyboardButton(text="🔙 Pilih Server",callback_data="code_all")])
-    text=f"🗂 <b>SERVER {no} • {html.escape(server['name'])}</b>\\n\\n"
-    text += "\\n".join(f"• {html.escape(r['title'] or 'Untitled')}" for r in rows) if rows else "Belum ada code di server ini."
+    text=f"🗂 <b>SERVER {no} • {html.escape(server['name'])}</b>\n\n"
+    text += "\n".join(f"• {html.escape(r['title'] or 'Untitled')}" for r in rows) if rows else "Belum ada code di server ini."
     await c.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @router.callback_query(F.data.startswith('codepage:'))
@@ -457,6 +458,18 @@ async def open_notice_info(c):
     await open_group_info(c)
 
 
+async def vip_selector_menu(m: Message):
+    lang = await _lang(m.from_user.id)
+    text = ("💎 <b>MENU VIP</b>\\n\\nPilih akses yang kamu butuhkan:"
+            if lang == "id" else
+            "💎 <b>VIP MENU</b>\\n\\nChoose the access you need:")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👑 VIP Bot", callback_data="keyword_vipbot")],
+        [InlineKeyboardButton(text="💎 VIP Group", callback_data="keyword_vipgroup")],
+    ])
+    await m.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
 async def vipbot_menu(m: Message):
     lang = await _lang(m.from_user.id)
     rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_packages WHERE active ORDER BY price")
@@ -465,16 +478,16 @@ async def vipbot_menu(m: Message):
         [InlineKeyboardButton(text="🛍️ Ambil Sebagian" if lang == "id" else "🛍️ Select Some", callback_data="vipsome")],
         [InlineKeyboardButton(text="🛒 Ambil Semua" if lang == "id" else "🛒 Get All", callback_data="vipall")],
     ]
-    text = ("👑 <b>VIP BOT</b>\\n\\nPilih paket untuk mendapatkan akses Code di bot."
+    text = ("👑 <b>VIP BOT</b>\n\nPilih paket untuk mendapatkan akses Code di bot."
             if lang == "id" else
-            "👑 <b>VIP BOT</b>\\n\\nChoose a package to get Code access in the bot.")
+            "👑 <b>VIP BOT</b>\n\nChoose a package to get Code access in the bot.")
     await m.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None)
 
 async def vip_group_menu(m: Message):
     lang = await _lang(m.from_user.id)
-    text = ("💎 <b>VIP GROUP</b>\\n\\nPilih grup atau channel VIP yang ingin dibuka."
+    text = ("💎 <b>VIP GROUP</b>\n\nPilih grup atau channel VIP yang ingin dibuka."
             if lang == "id" else
-            "💎 <b>VIP GROUP</b>\\n\\nChoose the VIP group or channel you want to open.")
+            "💎 <b>VIP GROUP</b>\n\nChoose the VIP group or channel you want to open.")
     buttons = [
         [InlineKeyboardButton(text="👥 Grup Code" if lang == "id" else "👥 Code Group", url=DIRECT_GROUP_CODE_URL)],
         [InlineKeyboardButton(text="📚 Channel Semua Code" if lang == "id" else "📚 All Codes Channel", url=DIRECT_ALL_CODE_URL)],
@@ -483,6 +496,11 @@ async def vip_group_menu(m: Message):
     ]
     await m.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
+@router.message(F.chat.type == "private", Command("group"))
+async def group_command(m: Message):
+    await vip_group_menu(m)
+
+
 @router.message(F.chat.type=='private', F.text, ~F.text.startswith('/'))
 async def keyword_help(m:Message):
     text=(m.text or '').strip().lower()
@@ -490,18 +508,18 @@ async def keyword_help(m:Message):
 
     if "caranya gimana" in text or "how does it work" in text or "how to open" in text:
         guide = (
-            "📖 <b>CARA MEMBUKA CODE</b>\\n\\n"
-            "1. Kirim kode media ke chat bot.\\n"
-            "2. Periksa informasi Code yang muncul.\\n"
-            "3. Tekan tombol Buka Code.\\n"
-            "4. Pilih akses gratis atau metode pembayaran yang tersedia.\\n"
+            "📖 <b>CARA MEMBUKA CODE</b>\n\n"
+            "1. Kirim kode media ke chat bot.\n"
+            "2. Periksa informasi Code yang muncul.\n"
+            "3. Tekan tombol Buka Code.\n"
+            "4. Pilih akses gratis atau metode pembayaran yang tersedia.\n"
             "5. Ikuti petunjuk sampai media dikirim."
             if lang == "id" else
-            "📖 <b>HOW TO OPEN A CODE</b>\\n\\n"
-            "1. Send the media code to the bot.\\n"
-            "2. Review the Code information.\\n"
-            "3. Tap Open Code.\\n"
-            "4. Choose free access or an available payment method.\\n"
+            "📖 <b>HOW TO OPEN A CODE</b>\n\n"
+            "1. Send the media code to the bot.\n"
+            "2. Review the Code information.\n"
+            "3. Tap Open Code.\n"
+            "4. Choose free access or an available payment method.\n"
             "5. Follow the instructions until the media is delivered."
         )
         return await m.answer(guide, parse_mode="HTML")
@@ -511,11 +529,11 @@ async def keyword_help(m:Message):
             InlineKeyboardButton(text="👑 VIP Bot", callback_data="keyword_vipbot"),
             InlineKeyboardButton(text="💎 VIP Group", callback_data="keyword_vipgroup"),
         ]])
-        notice = "💎 <b>MENU VIP</b>\\nPilih jenis VIP yang kamu maksud." if lang == "id" else "💎 <b>VIP MENU</b>\\nChoose the type of VIP you need."
+        notice = "💎 <b>MENU VIP</b>\nPilih jenis VIP yang kamu maksud." if lang == "id" else "💎 <b>VIP MENU</b>\nChoose the type of VIP you need."
         return await m.answer(notice, parse_mode="HTML", reply_markup=kb)
 
     if re.search(r"\\bcode\\b", text):
-        notice = "🔑 <b>MENU CODE</b>\\nPilih server untuk mencari Code media." if lang == "id" else "🔑 <b>CODE MENU</b>\\nChoose a server to search media Codes."
+        notice = "🔑 <b>MENU CODE</b>\nPilih server untuk mencari Code media." if lang == "id" else "🔑 <b>CODE MENU</b>\nChoose a server to search media Codes."
         return await m.answer(notice, parse_mode="HTML", reply_markup=await _server_keyboard(m.from_user.id))
 
     if text in {'group','video'}:
@@ -540,7 +558,7 @@ async def keyword_vipbot(c: CallbackQuery):
     buttons = [[InlineKeyboardButton(text=f"{r['name']} • Rp{int(r['price']):,}".replace(',', '.'), callback_data=f"vip:{r['code']}")] for r in rows]
     buttons += [[InlineKeyboardButton(text="🛍️ Ambil Sebagian" if lang == "id" else "🛍️ Select Some", callback_data="vipsome")],
                 [InlineKeyboardButton(text="🛒 Ambil Semua" if lang == "id" else "🛒 Get All", callback_data="vipall")]]
-    await c.message.answer(("👑 <b>VIP BOT</b>\\n\\nPilih paket untuk mendapatkan akses Code di bot." if lang == "id" else "👑 <b>VIP BOT</b>\\n\\nChoose a package to get Code access in the bot."), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None)
+    await c.message.answer(("👑 <b>VIP BOT</b>\n\nPilih paket untuk mendapatkan akses Code di bot." if lang == "id" else "👑 <b>VIP BOT</b>\n\nChoose a package to get Code access in the bot."), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None)
 
 @router.callback_query(F.data == "keyword_vipgroup")
 async def keyword_vipgroup(c: CallbackQuery):
@@ -552,7 +570,7 @@ async def keyword_vipgroup(c: CallbackQuery):
         [InlineKeyboardButton(text="💾 Channel Backup" if lang == "id" else "💾 Backup Channel", url=DIRECT_BACKUP_URL)],
         [InlineKeyboardButton(text="🔔 Channel Notifikasi" if lang == "id" else "🔔 Notification Channel", url=DIRECT_NOTICE_URL)],
     ]
-    await c.message.answer(("💎 <b>VIP GROUP</b>\\n\\nPilih grup atau channel VIP yang ingin dibuka." if lang == "id" else "💎 <b>VIP GROUP</b>\\n\\nChoose a VIP group or channel."), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.message.answer(("💎 <b>VIP GROUP</b>\n\nPilih grup atau channel VIP yang ingin dibuka." if lang == "id" else "💎 <b>VIP GROUP</b>\n\nChoose a VIP group or channel."), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 async def media_hint(m):
     from utils.admin_access import admin_access

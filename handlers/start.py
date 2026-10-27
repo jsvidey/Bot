@@ -205,6 +205,11 @@ async def vipbot_command(m: Message):
 
 @router.message(F.chat.type == "private", Command("vip"))
 async def vip_group_command(m: Message):
+    from handlers.misc import vip_selector_menu
+    await vip_selector_menu(m)
+
+@router.message(F.chat.type == "private", Command("group"))
+async def group_command(m: Message):
     from handlers.misc import vip_group_menu
     await vip_group_menu(m)
 
