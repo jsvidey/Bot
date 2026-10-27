@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -81,7 +82,8 @@ class B2Pool:
                 signature_version="s3v4",
                 connect_timeout=30,
                 read_timeout=REQUEST_TIMEOUT,
-                retries={"max_attempts": 3, "mode": "standard"},
+                retries={"max_attempts": 5, "mode": "standard"},
+                s3={"addressing_style": "path"},
             ),
         )
         return B2Account(
@@ -237,6 +239,11 @@ class B2Pool:
                                 account.bucket,
                                 object_key,
                                 ExtraArgs=extra,
+                                Config=TransferConfig(
+                                    multipart_threshold=64 * 1024 * 1024,
+                                    max_concurrency=1,
+                                    use_threads=False,
+                                ),
                             )
                         else:
                             await asyncio.to_thread(
@@ -244,6 +251,11 @@ class B2Pool:
                                 snapshot,
                                 account.bucket,
                                 object_key,
+                                Config=TransferConfig(
+                                    multipart_threshold=64 * 1024 * 1024,
+                                    max_concurrency=1,
+                                    use_threads=False,
+                                ),
                             )
 
                         head = await asyncio.to_thread(
