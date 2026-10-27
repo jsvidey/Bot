@@ -679,6 +679,102 @@ FINAL_PHRASES = {
 }
 
 
+# Bilingual coverage for the preview upload flow, server browser, VIP links,
+# and server-management controls added in the latest update.
+FINAL_PHRASES["en"].update({
+    "🖼 <b>PREVIEW UNTUK PENGGUNA</b>\n\nKirim <b>1 video</b> atau maksimal <b>5 gambar</b> sebagai preview gratis. Jangan campur video dan gambar. Jika tidak ingin preview, kirim <code>-</code>. Setelah selesai tekan tombol Selesai Preview.": "🖼 <b>USER PREVIEW</b>\n\nSend <b>1 video</b> or up to <b>5 images</b> as a free preview. Do not mix videos and images. If you do not want a preview, send <code>-</code>. When finished, tap Finish Preview.",
+    "✅ Selesai Preview": "✅ Finish Preview",
+    "⏭ Lewati Preview": "⏭ Skip Preview",
+    "Preview hanya boleh 1 video ATAU maksimal 5 gambar. Hapus pilihan sebelumnya dengan /cancelupload lalu mulai lagi, atau selesaikan preview.": "A preview can contain only 1 video OR up to 5 images. Clear the previous selection with /cancelupload and start again, or finish the preview.",
+    "Preview sudah berisi video. Jangan campur video dan gambar.": "The preview already contains a video. Do not mix videos and images.",
+    "Maksimal 5 gambar preview.": "A maximum of 5 preview images is allowed.",
+    "Kirim 1 video atau maksimal 5 gambar. Untuk melewati preview, kirim `-`.": "Send 1 video or up to 5 images. To skip the preview, send `-`.",
+    "Fitur upload hanya untuk admin/owner.": "Uploading is restricted to admins/owners.",
+    "Khusus admin/owner.": "Admins/owners only.",
+    "🗂 <b>SERVER CATEGORIES</b>\\nEdit nama, nonaktifkan, atau aktifkan kembali server 1–10.": "🗂 <b>SERVER CATEGORIES</b>\\nRename, disable, or re-enable servers 1–10.",
+    "Hapus/aktifkan": "Disable/enable",
+    "➕ Tambah/aktifkan slot server": "➕ Add/enable server slot",
+    "Kirim nama baru untuk Server {no}. Nama saat ini: {name}": "Send a new name for Server {no}. Current name: {name}",
+    "Slot server tidak ditemukan.": "Server slot not found.",
+    "Semua slot 1–10 sudah aktif. Nonaktifkan salah satu slot dahulu.": "All slots 1–10 are active. Disable a slot first.",
+    "Kirim nama untuk mengaktifkan Server {no}.": "Send a name to activate Server {no}.",
+    "Nama server wajib 1–60 karakter. Coba lagi.": "Server name must be 1–60 characters. Please try again.",
+    "✅ Server {no} sekarang bernama <b>{name}</b>.": "✅ Server {no} is now named <b>{name}</b>.",
+    "💎 VIP Channel Links": "💎 VIP Channel Links",
+    "🗂 Server Categories": "🗂 Server Categories",
+    "📢 Pantau update terbaru &amp; bantu share channel.": "📢 Follow the latest updates and help share the channel.",
+    "📢 Pantau update terbaru & bantu share channel.": "📢 Follow the latest updates and help share the channel.",
+    "Murah untuk 10 orang tercepat dan jika lebih maka harga naik": "Discounted for the first 10 people; the price increases afterward",
+    "🚀 More VIP Groups Coming Soon!": "🚀 More VIP Groups Coming Soon!",
+    "❤️‍🔥 Drop Your Reaction!": "❤️‍🔥 Drop Your Reaction!",
+    "⚡ LEARN • SHARE • GROW": "⚡ LEARN • SHARE • GROW",
+    "└": "└",
+    "🎬 Preview • {title}": "🎬 Preview • {title}",
+    "🎬 Preview video": "🎬 Video preview",
+    "⭐ REVIEW GRATIS": "⭐ FREE REVIEW",
+    "📝 Ada yang kenal": "📝 Know someone who might like this?",
+    "⭐ Code review:": "⭐ Review code:",
+    "🔑 Code media:": "🔑 Media code:",
+    "💰 Harga:": "💰 Price:",
+    "📦 Media:": "📦 Media:",
+    "🗂 Server:": "🗂 Server:",
+    "🤖 Bot:": "🤖 Bot:",
+    "📢 Ini adalah review gratis. Media lengkap hanya tersedia setelah akses dibuka/pembayaran berhasil.": "📢 This is a free review. Full media is available only after access is unlocked or payment succeeds.",
+    "Penasaran dengan media ini? Tekan tombol <b>Buy Now</b> di bawah.": "Interested in this media? Tap <b>Buy Now</b> below.",
+    "🛒 Minat? Lanjut Buy Sekarang": "🛒 Interested? Buy Now",
+    "🔎 Cari Code Lain": "🔎 Find Another Code",
+    "📁 Code": "📁 Code",
+    "📥 Buka Media": "📥 Open Media",
+    "⭐ Review": "⭐ Review",
+    "💬 Chat Admin": "💬 Message Admin",
+    "❓ Bantuan": "❓ Help",
+    "💎 VIP Access": "💎 VIP Access",
+    "💬 <b>Chat Admin</b>\n\nKirim pertanyaan, request, atau pesanmu di sini. Admin akan membalas lewat bot.\nKetik /cancel untuk mengakhiri chat.": "💬 <b>Message Admin</b>\n\nSend your questions, requests, or messages here. The admin will reply through the bot.\nType /cancel to end the chat.",
+    "💬 Chat admin sedang ditutup. Silakan coba lagi nanti.": "💬 Admin chat is closed. Please try again later.",
+    "✅ Chat admin ditutup. /msg untuk menghubungi admin lagi.": "✅ Admin chat ended. Use /msg to contact the admin again.",
+    "Chat admin baru saja ditutup oleh admin.": "Admin chat has just been closed by an admin.",
+    "Admin belum tersedia. Pesan belum terkirim; coba lagi nanti.": "No admin is available. Your message was not sent; please try again later.",
+    "✅ Pesanmu sudah dikirim ke admin.": "✅ Your message has been sent to the admin.",
+    "⚠️ Pesan belum terkirim. Coba lagi nanti.": "⚠️ Your message was not sent. Please try again later.",
+    "Format: /reply USER_ID pesan balasan": "Format: /reply USER_ID reply message",
+    "Pesan balasan tidak boleh kosong.": "The reply message cannot be empty.",
+    "✅ Balasan terkirim.": "✅ Reply sent.",
+    "❌ Balasan gagal dikirim. User mungkin belum membuka bot atau telah memblokir bot.": "❌ Reply failed. The user may not have started the bot or may have blocked it.",
+})
+
+
+FINAL_PHRASES["en"].update({
+    "🖼 <b>PREVIEW UNTUK PENGGUNA</b>": "🖼 <b>USER PREVIEW</b>",
+    "Kirim <b>1 video</b> atau maksimal <b>5 gambar</b> sebagai preview gratis.": "Send <b>1 video</b> or up to <b>5 images</b> as a free preview.",
+    "Jangan campur video dan gambar.": "Do not mix videos and images.",
+    "Jika tidak ingin preview, kirim <code>-</code>.": "If you do not want a preview, send <code>-</code>.",
+    "Setelah selesai tekan tombol Selesai Preview.": "When finished, tap Finish Preview.",
+    "🗂 <b>SERVER CATEGORIES</b>": "🗂 <b>SERVER CATEGORIES</b>",
+    "Edit nama, nonaktifkan, atau aktifkan kembali server 1–10.": "Rename, disable, or re-enable servers 1–10.",
+    "Kirim lagi jika ingin menambah gambar, atau tekan Selesai Preview.": "Send more if you want to add images, or tap Finish Preview.",
+    "Preview diterima:": "Preview received:",
+    "item. Kirim lagi": "items. Send more",
+    "Nama server wajib": "Server name must be",
+    "karakter. Coba lagi.": "characters. Please try again.",
+    "Kirim kode media atau pilih menu…": "Send a media code or choose a menu…",
+    "Kirim kode media atau pilih menu...": "Send a media code or choose a menu...",
+    "Pilih menu dari keyboard bawah atau kirim kode media.": "Choose a menu from the keyboard below or send a media code.",
+    "📁 Code": "📁 Code",
+    "💎 VIP Channel Links": "💎 VIP Channel Links",
+    "💬 Chat Admin": "💬 Message Admin",
+    "📢 Channel Update": "📢 Updates Channel",
+    "Murah untuk 10 orang tercepat dan jika lebih maka harga naik": "Discounted for the first 10 people; the price increases afterward",
+})
+
+# Keep the language switcher's two supported languages consistent across new UI.
+WORD_DICT["en"].update({
+    "Preview": "Preview", "preview": "preview", "Server": "Server", "server": "server",
+    "Kategori": "Category", "kategori": "category", "aktifkan": "enable", "nonaktifkan": "disable",
+    "Selesai": "Finish", "Lewati": "Skip", "gambar": "images", "video": "video",
+    "terkirim": "sent", "terima": "received", "diterima": "received", "cocok": "match",
+})
+
+
 def translate(text: str | None, lang: str) -> str | None:
     """Translate bot-generated UI while preserving dynamic values and HTML."""
     if text is None or lang == "id" or lang not in SUPPORTED:
