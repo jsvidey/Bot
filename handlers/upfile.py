@@ -45,9 +45,9 @@ def _t(lang, key, **kw):
             "zh": "📤 <b>上传文件</b>",
         },
         "up_start": {
-            "id": "Kirim maksimal <b>{max}</b> media.\nMedia sampai 20 MB disimpan ke Backblaze B2. Media di atas 20 MB otomatis memakai Telegram file_id.\nSetelah selesai tekan <b>✅ Selesai Upload</b>.",
-            "en": "Send up to <b>{max}</b> media files.\nMedia up to 20 MB is stored in Backblaze B2. Media above 20 MB automatically uses the Telegram file_id.\nWhen finished, press <b>✅ Finish Upload</b>.",
-            "zh": "最多发送 <b>{max}</b> 个媒体文件。\n20 MB 以内的媒体会保存到 Backblaze B2。超过 20 MB 的媒体会自动使用 Telegram file_id。\n完成后点击 <b>✅ 完成上传</b>。",
+            "id": "Kirim maksimal <b>{max}</b> media.\nMedia sampai 20 MB wajib tersimpan ke Backblaze B2 dan menyimpan Telegram file_id sebagai cadangan. Media di atas 20 MB memakai Telegram file_id. Jika upload B2 gagal, media kecil dilewati.\nSetelah selesai tekan <b>✅ Selesai Upload</b>.",
+            "en": "Send up to <b>{max}</b> media files.\nMedia up to 20 MB must be saved to Backblaze B2 and also keeps its Telegram file_id. Media above 20 MB uses the Telegram file_id. If B2 upload fails, the small media is skipped.\nWhen finished, press <b>✅ Finish Upload</b>.",
+            "zh": "最多发送 <b>{max}</b> 个媒体文件。\n20 MB 以内的媒体必须保存到 Backblaze B2，同时保留 Telegram file_id。超过 20 MB 的媒体使用 Telegram file_id。若 B2 上传失败，则跳过该小文件。\n完成后点击 <b>✅ 完成上传</b>。",
         },
         "finish": {"id":"✅ Selesai Upload","en":"✅ Finish Upload","zh":"✅ 完成上传"},
         "cancel": {"id":"❌ Batal","en":"❌ Cancel","zh":"❌ 取消"},
@@ -69,9 +69,9 @@ def _t(lang, key, **kw):
             "zh":"点击 <b>✅ 完成上传</b> 继续。",
         },
         "b2_unavailable": {
-            "id":"⚠️ B2 tidak tersedia. Media disimpan menggunakan <b>Telegram file_id</b>。",
-            "en":"⚠️ B2 is unavailable. The media is stored using the <b>Telegram file_id</b>.",
-            "zh":"⚠️ B2 不可用。媒体将使用 <b>Telegram file_id</b> 保存。",
+            "id":"⚠️ B2 tidak tersedia. Media di bawah 20 MB dilewati dan tidak akan disimpan/publikasi.",
+            "en":"⚠️ B2 is unavailable. Media under 20 MB is skipped and will not be saved/published.",
+            "zh":"⚠️ B2 不可用。20 MB 以下的媒体将被跳过，不会保存或发布。",
         },
         "loading": {
             "id":"⏳ <b>Loading…</b>\n\n📤 Menyimpan media <b>{n}/{max}</b>",
@@ -227,7 +227,8 @@ async def receive(m,state):
             # Small media still goes to B2 when available. If B2 is unavailable,
             # keep the Telegram file_id instead of rejecting the upload.
             if not b2_pool.available:
-                media.append(file_id_record())
+                # Small files must be saved to B2 before they are accepted.
+                # Never keep a file_id-only fallback for a <=20 MiB upload.
                 await state.update_data(media=media)
                 if status_id:
                     try:
@@ -268,22 +269,35 @@ async def receive(m,state):
                     'storage_status':'b2_available'
                 })
             except Exception as exc:
-                # B2 failure is non-fatal. Preserve the media through file_id.
-                media.append(file_id_record())
+                # Do not accept/publish this small file if B2 did not store it.
+                # In particular, do not silently fall back to Telegram file_id.
                 await state.update_data(media=media)
                 try:
                     await (await get_pool()).execute(
                         "INSERT INTO error_logs(source,message,user_id) VALUES($1,$2,$3)",
-                        'upfile_b2_fallback',str(exc)[:1000],uid)
+                        'upfile_b2_skipped',str(exc)[:1000],uid)
                 except: pass
                 try:
                     from utils.notify_channel import notify
                     await notify(m.bot,
-                        f'⚠️ <b>UP FILE — B2 FALLBACK</b>\n\n'
-                        f'🆔 User: <code>{uid}</code>\n'
-                        f'📎 File: <code>{html.escape(name)}</code>\n'
+                        f'⚠️ <b>UP FILE — B2 UPLOAD FAILED (SKIPPED)</b>\\n\\n'
+                        f'🆔 User: <code>{uid}</code>\\n'
+                        f'📎 File: <code>{html.escape(name)}</code>\\n'
+                        f'⏭ Media dilewati dan tidak akan dimasukkan ke code/channel karena gagal tersimpan di Backblaze B2.\\n'
                         f'❌ <code>{html.escape(str(exc)[:700])}</code>')
                 except: pass
+                if status_id:
+                    try:
+                        await m.bot.edit_message_text(
+                            chat_id=m.chat.id,message_id=status_id,
+                            text=(_t(lang, "up_title") + "\\n\\n" +
+                                  _t(lang, "received", n=len(media), max=MAX_MEDIA) + "\\n\\n" +
+                                  "⚠️ Media ini dilewati karena gagal disimpan ke Backblaze B2. Media yang sudah berhasil disimpan tetap aman."),
+                            parse_mode='HTML',reply_markup=_media_kb(lang))
+                    except: pass
+                try: await m.delete()
+                except: pass
+                return
             finally:
                 try: os.remove(path)
                 except: pass
@@ -412,7 +426,8 @@ async def create_code(m,state,price:int, uid=None, username=None, full_name=None
     }
     success, lbl_title, lbl_tag, lbl_type, lbl_bot, lbl_media, free_txt, paid_txt = labels.get(lang, labels['id'])
     type_text = paid_txt if price > 0 else free_txt
-    bot_name = str(BOT_USERNAME or '').strip().lstrip('@')
+    from utils.bot_identity import get_bot_username
+    bot_name = await get_bot_username()
     bot_text = f'@{html.escape(bot_name)}' if bot_name else '-'
     media_summary = f"{counts[1]}v{counts[0]}p" if counts[1] or counts[0] else f"{len(media)} media"
     price_summary = f"Rp{price:,}".replace(',', '.') if price else 'GRATIS'

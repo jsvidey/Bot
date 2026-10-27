@@ -1001,6 +1001,7 @@ async def errors(c):
 
 # Extended admin controls: persisted settings, subscriptions, VIP packages, transactions and user security.
 SETTING_LABELS = {
+    'bot_username': ('Username bot untuk link', '@JsShowfileebot tanpa @; hanya mengatur link yang dibuat bot, bukan username Telegram di BotFather'),
     'media_send_delay_ms': ('Jeda antar media (ms)', 'angka 0–30000'),
     'vip_code_delay_minutes': ('Jeda VIP (menit)', 'angka 0–1440'),
     'default_watermark_enabled': ('Watermark default upload', 'on/off'),
@@ -1095,12 +1096,14 @@ async def admin_chat_toggle(c):
 async def admin_channels(c):
     if not await admin_access(c.from_user.id): return await c.answer('No access', show_alert=True)
     p = await get_pool()
-    rows = await p.fetch("SELECT key,value FROM settings WHERE key IN ('force_channel_id','force_channel_username','force_channel_url','notice_sub_channel_id','notice_sub_channel_username','notice_sub_channel_url') ORDER BY key")
+    rows = await p.fetch("SELECT key,value FROM settings WHERE key IN ('bot_username','force_channel_id','force_channel_username','force_channel_url','notice_sub_channel_id','notice_sub_channel_username','notice_sub_channel_url') ORDER BY key")
     values = {r['key']: str(r['value'] or '') for r in rows}
     text = ('📡 <b>FORCE JOIN CHANNELS</b>\n\n' +
+        f"Username bot untuk link: <code>{html.escape(values.get('bot_username','JsShowfileebot') or 'JsShowfileebot')}</code>\n\n" +
         f"Channel 1 ID: <code>{html.escape(values.get('force_channel_id','(env)'))}</code>\nUsername: <code>{html.escape(values.get('force_channel_username','(env)'))}</code>\nURL: {html.escape(values.get('force_channel_url','(env)'))}\n\n" +
         f"Channel 2 ID: <code>{html.escape(values.get('notice_sub_channel_id','(env)'))}</code>\nUsername: <code>{html.escape(values.get('notice_sub_channel_username','(env)'))}</code>\nURL: {html.escape(values.get('notice_sub_channel_url','(env)'))}\n\nPilih item untuk mengubahnya. Pastikan bot menjadi admin pada channel agar pemeriksaan membership dapat bekerja.")
-    buttons = [[InlineKeyboardButton(text=label, callback_data=f'admsetting:{key}')] for key,(label,_) in SETTING_LABELS.items() if key.startswith(('force_channel','notice_sub_channel'))]
+    buttons = [[InlineKeyboardButton(text='🤖 Edit Username Bot', callback_data='admsetting:bot_username')]]
+    buttons += [[InlineKeyboardButton(text=label, callback_data=f'admsetting:{key}')] for key,(label,_) in SETTING_LABELS.items() if key.startswith(('force_channel','notice_sub_channel'))]
     buttons.append([InlineKeyboardButton(text='🔙 Panel', callback_data='adm:panel')])
     await c.message.edit_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
@@ -1151,6 +1154,9 @@ async def admin_setting_save(m, state: FSMContext):
     elif key=='default_watermark_enabled':
         if raw.lower() not in {'on','off','ya','tidak','yes','no'}: return await m.answer('Kirim on atau off.')
         raw='on' if raw.lower() in {'on','ya','yes'} else 'off'
+    elif key in {'bot_username'}:
+        raw=raw.lstrip('@').strip()
+        if not re.fullmatch(r'[A-Za-z0-9_]{5,32}', raw): return await m.answer('Username bot tidak valid. Masukkan username tanpa @, contoh JsShowfileebot.')
     elif key.endswith('_username'):
         if raw != '-':
             raw=raw.lstrip('@')

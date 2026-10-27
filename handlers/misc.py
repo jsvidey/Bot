@@ -61,8 +61,10 @@ async def _t(uid, key, **kwargs):
     return UI_TEXT.get(lang, UI_TEXT["id"]).get(key, UI_TEXT["id"].get(key, key)).format(**kwargs)
 
 
-def _code_link(code: str) -> str:
-    return f"https://t.me/{BOT_USERNAME}?start={code}"
+async def _code_link(code: str) -> str:
+    from utils.bot_identity import get_bot_username
+    bot_name = await get_bot_username()
+    return f"https://t.me/{bot_name}?start={code}" if bot_name else ""
 
 def _safe_url(s: str) -> str:
     return html.escape(s, quote=True)
@@ -104,14 +106,14 @@ async def _paged_codes(page:int=0, mode:str="all", per_page:int=10):
     total=int(await p.fetchval("SELECT COUNT(*) FROM files WHERE active=TRUE") or 0)
     return rows,total
 
-def _code_link(code):
-    # Always use the configured bot username so generated links match Railway BOT_USERNAME.
-    bot_name = str(BOT_USERNAME or "").strip().lstrip("@")
+async def _code_link(code):
+    from utils.bot_identity import get_bot_username
+    bot_name = await get_bot_username()
     return f"https://t.me/{bot_name}?start={code}" if bot_name else ""
 
-def _code_text_row(r, prefix=""):
+async def _code_text_row(r, prefix=""):
     title=html.escape((r['title'] or 'Untitled')[:60])
-    href=html.escape(_code_link(r['code']),quote=True)
+    href=html.escape(await _code_link(r['code']),quote=True)
     price=int(r['price_idr'] or 0)
     paid=f" • 💰 Rp{price:,}".replace(',','.') if price else " • 🆓"
     return (
@@ -133,7 +135,7 @@ async def _render_code_command(m: Message, mode: str = "top"):
         body += "Belum ada Code." if lang == "id" else "No codes are available yet."
     else:
         for i, row in enumerate(rows, 1):
-            body += _code_text_row(row, f"{i}. ")
+            body += await _code_text_row(row, f"{i}. ")
     await m.answer(body, parse_mode="HTML", disable_web_page_preview=True)
 
 async def _code_nav(page,total,mode,uid=0):
@@ -165,7 +167,7 @@ async def _render_code_list(c,page=0,mode="all"):
         text+="Belum ada code yang dibuat."
     else:
         for i,r in enumerate(rows, page*10+1):
-            text+=_code_text_row(r, f"{i}. " if mode!="all" else "")
+            text+=await _code_text_row(r, f"{i}. " if mode!="all" else "")
         text+="Klik <b>Judul</b> untuk mencari/membuka media yang terhubung dengan CODE tersebut."
     await c.message.edit_text(text,parse_mode='HTML',reply_markup=await _code_nav(page,total,mode,c.from_user.id))
 
@@ -265,7 +267,7 @@ async def browsecode(c):
         pass
     price=int(f['price_idr'] or 0)
     paid=f"💰 Harga: <b>Rp{price:,}</b>".replace(',','.') if price else "🆓 <b>FREE CODE</b>"
-    href=html.escape(_code_link(f['code']),quote=True)
+    href=html.escape(await _code_link(f['code']),quote=True)
     await c.message.edit_text(
         f"📝 <a href=\"{href}\"><b>{html.escape(f['title'] or 'Untitled')}</b></a>\n\n"
         f"🔑 <code>{html.escape(f['code'])}</code>\n📦 Media: <b>{f['media_count']}</b>\n{paid}\n\n"

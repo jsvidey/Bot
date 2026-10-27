@@ -131,7 +131,8 @@ async def show(m,code):
             [InlineKeyboardButton(text='🔎 Cari Code Lain' if lang=='id' else '🔎 Find Another Code',callback_data='getfile')],
         ])
         server_name = str(f.get('server_name') or '—')
-        bot_name = str(BOT_USERNAME or '').strip().lstrip('@')
+        from utils.bot_identity import get_bot_username
+        bot_name = await get_bot_username()
         caption=(
             f"⭐ <b>REVIEW GRATIS</b>\n\n"
             f"📝 <b>{html.escape(f['title'] or 'Untitled')}</b>\n"
@@ -317,14 +318,15 @@ async def send_page(bot, chat_id, code, media, page, access_expires_at=None, per
             default_caption = (
                 f"🔑 Code: {html.escape(str(code))}\n"
                 f"📁 Media {i}/{total}\n"
-                f"🤖 Bot: @{html.escape(str(BOT_USERNAME).lstrip('@'))}\n"
+                f"🤖 Bot: @{html.escape(await __import__('utils.bot_identity', fromlist=['get_bot_username']).get_bot_username())}\n"
                 f"📢 Channel: {html.escape(str(ALL_CODE_CHANNEL_URL))}"
             )
             custom_watermark = await pool.fetchval("SELECT value FROM settings WHERE key='watermark_text'")
             if custom_watermark and str(custom_watermark).strip():
                 caption = html.escape(str(custom_watermark).strip())
                 caption = caption.replace('{code}', html.escape(str(code))).replace('{index}', str(i)).replace('{total}', str(total))
-                caption = caption.replace('{bot}', '@' + html.escape(str(BOT_USERNAME).lstrip('@'))).replace('{channel}', html.escape(str(ALL_CODE_CHANNEL_URL)))
+                from utils.bot_identity import get_bot_username
+                caption = caption.replace('{bot}', '@' + html.escape(await get_bot_username())).replace('{channel}', html.escape(str(ALL_CODE_CHANNEL_URL)))
             else:
                 caption = default_caption
         else:
