@@ -20,7 +20,7 @@ def channel_reply_kb(lang: str = "id", is_admin: bool = False):
     """Persistent keyboard under the chat input: main menu actions."""
     en = lang == "en"
     labels = [
-        KeyboardButton(text="💎 VIP Bot"),
+        KeyboardButton(text="👑 VIP Bot"),
         KeyboardButton(text="📥 Getfile"),
         KeyboardButton(text="🔑 Code"),
         KeyboardButton(text="💬 Support"),
