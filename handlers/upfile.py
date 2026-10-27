@@ -269,34 +269,32 @@ async def receive(m,state):
                     'storage_status':'b2_available'
                 })
             except Exception as exc:
-                # Do not accept/publish this small file if B2 did not store it.
-                # In particular, do not silently fall back to Telegram file_id.
+                # Never send B2 upload failures to the notification channel.
+                # Keep Telegram file_id as fallback so the media is still usable.
+                fallback = file_id_record()
+                fallback['storage_status'] = 'b2_failed_telegram_fallback'
+                media.append(fallback)
                 await state.update_data(media=media)
                 try:
                     await (await get_pool()).execute(
                         "INSERT INTO error_logs(source,message,user_id) VALUES($1,$2,$3)",
-                        'upfile_b2_skipped',str(exc)[:1000],uid)
-                except: pass
-                try:
-                    from utils.notify_channel import notify
-                    await notify(m.bot,
-                        f'⚠️ <b>UP FILE — B2 UPLOAD FAILED (SKIPPED)</b>\\n\\n'
-                        f'🆔 User: <code>{uid}</code>\\n'
-                        f'📎 File: <code>{html.escape(name)}</code>\\n'
-                        f'⏭ Media dilewati dan tidak akan dimasukkan ke code/channel karena gagal tersimpan di Backblaze B2.\\n'
-                        f'❌ <code>{html.escape(str(exc)[:700])}</code>')
-                except: pass
+                        'upfile_b2_fallback_file_id', str(exc)[:1000], uid)
+                except Exception:
+                    pass
                 if status_id:
                     try:
                         await m.bot.edit_message_text(
-                            chat_id=m.chat.id,message_id=status_id,
-                            text=(_t(lang, "up_title") + "\\n\\n" +
-                                  _t(lang, "received", n=len(media), max=MAX_MEDIA) + "\\n\\n" +
-                                  "⚠️ Media ini dilewati karena gagal disimpan ke Backblaze B2. Media yang sudah berhasil disimpan tetap aman."),
-                            parse_mode='HTML',reply_markup=_media_kb(lang))
-                    except: pass
-                try: await m.delete()
-                except: pass
+                            chat_id=m.chat.id, message_id=status_id,
+                            text=(_t(lang, "up_title") + "\n\n" +
+                                  _t(lang, "received", n=len(media), max=MAX_MEDIA) + "\n\n" +
+                                  "⚠️ Backblaze B2 gagal untuk media ini. Telegram file_id disimpan sebagai cadangan; upload tetap dilanjutkan."),
+                            parse_mode='HTML', reply_markup=_media_kb(lang))
+                    except Exception:
+                        pass
+                try:
+                    await m.delete()
+                except Exception:
+                    pass
                 return
             finally:
                 try: os.remove(path)
