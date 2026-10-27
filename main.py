@@ -17,17 +17,23 @@ async def lifespan(app):
  await get_pool(); await init_db(); await b2_pool.reload_from_db()
  try:
   await bot.set_my_commands([
-   BotCommand(command="start", description="Mulai bot / Start bot"),
-   BotCommand(command="mypurchases", description="Riwayat pembelian / My purchases"),
+   BotCommand(command="start", description="Mulai / Start bot"),
+   BotCommand(command="vipbot", description="Paket VIP Bot / VIP Bot packages"),
+   BotCommand(command="vip", description="Akses grup VIP / VIP group access"),
+   BotCommand(command="code", description="Daftar Code / Browse Codes"),
+   BotCommand(command="mypurchaces", description="Riwayat pembelian / My purchases"),
    BotCommand(command="codetop", description="Top 10 Code"),
-   BotCommand(command="searchcode", description="Cari Code / Search Code"),
+   BotCommand(command="search", description="Cari Code / Search Code"),
    BotCommand(command="setting", description="Pengaturan bahasa / Language settings"),
   ])
   await bot.set_my_commands([
    BotCommand(command="start", description="Start the bot"),
-   BotCommand(command="mypurchases", description="View purchase history"),
-   BotCommand(command="codetop", description="Top 10 codes"),
-   BotCommand(command="searchcode", description="Search for a code"),
+   BotCommand(command="vipbot", description="VIP Bot packages"),
+   BotCommand(command="vip", description="VIP group access"),
+   BotCommand(command="code", description="Browse all Codes"),
+   BotCommand(command="mypurchaces", description="Purchase history"),
+   BotCommand(command="codetop", description="Top 10 Codes"),
+   BotCommand(command="search", description="Search for a Code"),
    BotCommand(command="setting", description="Language settings"),
   ], language_code="en")
  except Exception as e:
