@@ -161,7 +161,7 @@ async def approve(c):
    r=await conn.fetchrow("SELECT * FROM manual_payments WHERE id=$1 FOR UPDATE",did)
    if not r or r['status']!='pending': return await c.answer('Sudah diproses.',show_alert=True)
    await conn.execute("UPDATE manual_payments SET status='approved',admin_id=$1,processed_at=NOW() WHERE id=$2",c.from_user.id,did)
-   if r['target_code']:
+   if r['target_type'] != 'vip' and r['target_code']:
     f=await conn.fetchrow("SELECT owner_id,price_idr FROM files WHERE code=$1 AND active=TRUE",r['target_code'])
     if f:
      await conn.execute("UPDATE files SET views=views+1 WHERE code=$1",r['target_code'])
@@ -171,23 +171,18 @@ async def approve(c):
    elif r['target_type'] in ('points','stars'):
     raise ValueError('Legacy points/stars purchases are disabled')
    elif r['target_type']=='vip':
+    package=await conn.fetchrow("SELECT tier,daily_limit FROM vip_packages WHERE code=$1",r['target_code']) if r['target_code'] else None
+    tier=str(package['tier'] or 'vip') if package else 'vip'
+    daily_limit=int(package['daily_limit'] or 0) if package else 0
+    if daily_limit<=0:
+     days=int(r['quantity'])
+     daily_limit={1:2,3:4,4:3,5:6,7:4,10:10,15:5,30:30}.get(days,max(2,days))
     await conn.execute("""
-     UPDATE users
-     SET vip=TRUE,
+     UPDATE users SET vip=TRUE,
          vip_until=GREATEST(COALESCE(vip_until,NOW()),NOW())+($1||' days')::interval,
-         vip_plan_days=$1,
-         vip_daily_limit=CASE
-             WHEN $1=1 THEN 2
-             WHEN $1=3 THEN 4
-             WHEN $1=5 THEN 6
-             WHEN $1=7 THEN 7
-             WHEN $1=10 THEN 10
-             WHEN $1=15 THEN 15
-             WHEN $1=30 THEN 30
-             ELSE GREATEST($1,1)
-         END
-     WHERE user_id=$2
-    """,int(r['quantity']),r['user_id'])
+         vip_plan_days=$1,vip_daily_limit=$2,vip_tier=$3
+     WHERE user_id=$4
+    """,int(r['quantity']),daily_limit,tier,r['user_id'])
  # Remove the user's manual QR after approval.
  try:
   if r['qr_message_id']:
@@ -209,7 +204,7 @@ async def approve(c):
   pass
  try:
   from aiogram.types import InlineKeyboardMarkup,InlineKeyboardButton
-  if r['target_code']:
+  if r['target_type'] != 'vip' and r['target_code']:
    await c.bot.send_message(r['user_id'],f'✅ Pembayaran manual disetujui.\n🔑 Code: <code>{r["target_code"]}</code>',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='📥 Buka Code',callback_data=f'getcode:{r["target_code"]}')]]))
   elif r['target_type']=='vip':
    await c.bot.send_message(r['user_id'],'✅ Pembayaran manual disetujui. VIP telah diaktifkan.')

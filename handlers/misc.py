@@ -471,16 +471,67 @@ async def vip_selector_menu(m: Message):
 
 async def vipbot_menu(m: Message):
     lang = await _lang(m.from_user.id)
-    rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_packages WHERE active ORDER BY price")
-    buttons = [[InlineKeyboardButton(text=f"{r['name']} • Rp{int(r['price']):,}".replace(',', '.'), callback_data=f"vip:{r['code']}")] for r in rows]
-    buttons += [
-        [InlineKeyboardButton(text="🛍️ Ambil Sebagian" if lang == "id" else "🛍️ Select Some", callback_data="vipsome")],
-        [InlineKeyboardButton(text="🛒 Ambil Semua" if lang == "id" else "🛒 Get All", callback_data="vipall")],
+    text = (
+        "👑 <b>VIP BOT</b>\\n\\nPilih jenis paket di bawah ini. Daftar paket akan diurutkan dari harga termurah ke termahal.\\n\\n"
+        "💎 VIP Bot: akses code dengan kuota harian standar.\\n"
+        "🔥 VVIP Bot: akses code dengan kuota harian lebih besar."
+        if lang == "id" else
+        "👑 <b>VIP BOT</b>\\n\\nChoose a package type below. Packages are sorted from lowest to highest price.\\n\\n"
+        "💎 VIP Bot: code access with the standard daily quota.\\n"
+        "🔥 VVIP Bot: code access with a higher daily quota."
+    )
+    buttons = [
+        [InlineKeyboardButton(text="💎 VIP Bot", callback_data="vipcat:vip"),
+         InlineKeyboardButton(text="🔥 VVIP Bot", callback_data="vipcat:vvip")],
+        [InlineKeyboardButton(text="❔ Bantuan" if lang == "id" else "❔ Help", callback_data="vipbot:help"),
+         InlineKeyboardButton(text="🎁 Donasi" if lang == "id" else "🎁 Donate", callback_data="vipbot:donate")],
+        [InlineKeyboardButton(text="🔙 Kembali" if lang == "id" else "🔙 Back", callback_data="home")],
     ]
-    text = ("👑 <b>VIP BOT</b>\n\nPilih paket untuk mendapatkan akses Code di bot."
+    await m.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data == "vipbot:home")
+async def vipbot_home_callback(c: CallbackQuery):
+    lang = await _lang(c.from_user.id)
+    text = (
+        "👑 <b>VIP BOT</b>\\n\\nPilih jenis paket di bawah ini. Daftar paket akan diurutkan dari harga termurah ke termahal.\\n\\n"
+        "💎 VIP Bot: akses code dengan kuota harian standar.\\n🔥 VVIP Bot: akses code dengan kuota harian lebih besar."
+        if lang == "id" else
+        "👑 <b>VIP BOT</b>\\n\\nChoose a package type below. Packages are sorted from lowest to highest price.\\n\\n"
+        "💎 VIP Bot: standard daily code quota.\\n🔥 VVIP Bot: higher daily code quota."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 VIP Bot", callback_data="vipcat:vip"), InlineKeyboardButton(text="🔥 VVIP Bot", callback_data="vipcat:vvip")],
+        [InlineKeyboardButton(text="❔ Bantuan" if lang == "id" else "❔ Help", callback_data="vipbot:help"), InlineKeyboardButton(text="🎁 Donasi" if lang == "id" else "🎁 Donate", callback_data="vipbot:donate")],
+        [InlineKeyboardButton(text="🔙 Kembali" if lang == "id" else "🔙 Back", callback_data="home")],
+    ])
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await c.answer()
+
+
+@router.callback_query(F.data == "vipbot:help")
+async def vipbot_help_callback(c: CallbackQuery):
+    lang = await _lang(c.from_user.id)
+    text = ("ℹ️ <b>Bantuan VIP Bot</b>\\n\\nPilih VIP Bot atau VVIP Bot, lalu pilih paket sesuai durasi dan harga. Setelah pembayaran dikonfirmasi, status aktif otomatis. Kuota buka code berlaku per hari; jeda buka code dan pengiriman media mengikuti pengaturan admin."
             if lang == "id" else
-            "👑 <b>VIP BOT</b>\n\nChoose a package to get Code access in the bot.")
-    await m.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None)
+            "ℹ️ <b>VIP Bot Help</b>\\n\\nChoose VIP Bot or VVIP Bot, then select a package. Your subscription activates after payment confirmation. Daily code quotas and delays follow admin settings.")
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Kembali", callback_data="vipbot:home")]]))
+    await c.answer()
+
+
+@router.callback_query(F.data == "vipbot:donate")
+async def vipbot_donate_callback(c: CallbackQuery):
+    lang = await _lang(c.from_user.id)
+    text = ("🎁 <b>Donasi</b>\\n\\nTerima kasih sudah mendukung pengembangan bot. Pilih jumlah donasi Telegram Stars:"
+            if lang == "id" else "🎁 <b>Donate</b>\\n\\nThank you for supporting the bot. Choose a Telegram Stars donation amount:")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="25 ⭐", callback_data="vg:stars:25"), InlineKeyboardButton(text="50 ⭐", callback_data="vg:stars:50")],
+        [InlineKeyboardButton(text="75 ⭐", callback_data="vg:stars:75"), InlineKeyboardButton(text="100 ⭐", callback_data="vg:stars:100")],
+        [InlineKeyboardButton(text="🔙 Kembali", callback_data="vipbot:home")],
+    ])
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await c.answer()
+
 
 async def vip_group_menu(m: Message):
     lang = await _lang(m.from_user.id)
@@ -545,14 +596,17 @@ async def keyword_help(m:Message):
 
 @router.callback_query(F.data == "keyword_vipbot")
 async def keyword_vipbot(c: CallbackQuery):
-    await c.answer()
-    # Convert callback to a normal message-like action using the existing VIP menu.
-    rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_packages WHERE active ORDER BY price")
     lang = await _lang(c.from_user.id)
-    buttons = [[InlineKeyboardButton(text=f"{r['name']} • Rp{int(r['price']):,}".replace(',', '.'), callback_data=f"vip:{r['code']}")] for r in rows]
-    buttons += [[InlineKeyboardButton(text="🛍️ Ambil Sebagian" if lang == "id" else "🛍️ Select Some", callback_data="vipsome")],
-                [InlineKeyboardButton(text="🛒 Ambil Semua" if lang == "id" else "🛒 Get All", callback_data="vipall")]]
-    await c.message.answer(("👑 <b>VIP BOT</b>\n\nPilih paket untuk mendapatkan akses Code di bot." if lang == "id" else "👑 <b>VIP BOT</b>\n\nChoose a package to get Code access in the bot."), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None)
+    text = ("👑 <b>VIP BOT</b>\\n\\nPilih jenis paket di bawah ini. Daftar paket diurutkan dari harga termurah ke termahal.\\n\\n💎 VIP Bot: kuota harian standar.\\n🔥 VVIP Bot: kuota harian lebih besar."
+            if lang == "id" else
+            "👑 <b>VIP BOT</b>\\n\\nChoose a package type. Packages are sorted from lowest to highest price.\\n\\n💎 VIP Bot: standard daily quota.\\n🔥 VVIP Bot: higher daily quota.")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 VIP Bot", callback_data="vipcat:vip"), InlineKeyboardButton(text="🔥 VVIP Bot", callback_data="vipcat:vvip")],
+        [InlineKeyboardButton(text="❔ Bantuan" if lang == "id" else "❔ Help", callback_data="vipbot:help"), InlineKeyboardButton(text="🎁 Donasi" if lang == "id" else "🎁 Donate", callback_data="vipbot:donate")],
+        [InlineKeyboardButton(text="🔙 Kembali" if lang == "id" else "🔙 Back", callback_data="home")],
+    ])
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await c.answer()
 
 @router.callback_query(F.data == "keyword_vipgroup")
 async def keyword_vipgroup(c: CallbackQuery):

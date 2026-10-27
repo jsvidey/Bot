@@ -645,7 +645,7 @@ async def role_apply(c):
  if role=='member':
   await p.execute("UPDATE users SET is_admin=FALSE,vip=FALSE,vip_until=NULL WHERE user_id=$1",uid)
  elif role=='vip':
-  await p.execute("UPDATE users SET is_admin=FALSE,vip=TRUE,vip_until=NOW()+INTERVAL '30 days',vip_plan_days=30,vip_daily_limit=30 WHERE user_id=$1",uid)
+  await p.execute("UPDATE users SET is_admin=FALSE,vip=TRUE,vip_until=NOW()+INTERVAL '30 days',vip_plan_days=30,vip_daily_limit=30,vip_tier='vip' WHERE user_id=$1",uid)
  elif role=='admin':
   await p.execute("UPDATE users SET is_admin=TRUE WHERE user_id=$1",uid); ADMIN_IDS.add(uid)
  if role != 'admin' and not is_config_admin(uid): ADMIN_IDS.discard(uid)
@@ -1017,7 +1017,7 @@ async def user_action(m):
  try: uid=int(parts[1])
  except ValueError: return await m.answer('User ID harus angka.')
  action=parts[2].lower(); p=await get_pool()
- if action=='vip': await p.execute("UPDATE users SET vip=TRUE,vip_until=NOW()+INTERVAL '30 days',vip_plan_days=30,vip_daily_limit=30 WHERE user_id=$1",uid)
+ if action=='vip': await p.execute("UPDATE users SET vip=TRUE,vip_until=NOW()+INTERVAL '30 days',vip_plan_days=30,vip_daily_limit=30,vip_tier='vip' WHERE user_id=$1",uid)
  elif action=='admin':
   await p.execute("UPDATE users SET is_admin=TRUE WHERE user_id=$1",uid)
   ADMIN_IDS.add(uid)
@@ -1083,7 +1083,10 @@ async def errors(c):
 SETTING_LABELS = {
     'bot_username': ('Username bot untuk link', '@JsShowfileebot tanpa @; hanya mengatur link yang dibuat bot, bukan username Telegram di BotFather'),
     'media_send_delay_ms': ('Jeda antar media (ms)', 'angka 0–30000'),
-    'vip_code_delay_minutes': ('Jeda VIP (menit)', 'angka 0–1440'),
+    'vip_code_delay_minutes': ('Jeda buka code VIP (menit)', 'angka 0–1440'),
+    'vvip_code_delay_minutes': ('Jeda buka code VVIP (menit)', 'angka 0–1440'),
+    'vip_media_send_delay_ms': ('Jeda kirim media VIP (ms)', 'angka 0–30000'),
+    'vvip_media_send_delay_ms': ('Jeda kirim media VVIP (ms)', 'angka 0–30000'),
     'default_watermark_enabled': ('Watermark default upload', 'on/off'),
     'watermark_text': ('Teks watermark media', 'teks bebas; placeholder {code}, {index}, {total}, {bot}, {channel}'),
     'vip_updates_url': ('Link channel update VIP', 'URL https://t.me/...'),
@@ -1193,12 +1196,18 @@ async def admin_defaults(c):
     p=await get_pool()
     delay=await p.fetchval("SELECT value FROM settings WHERE key='media_send_delay_ms'") or '2000'
     vipdelay=await p.fetchval("SELECT value FROM settings WHERE key='vip_code_delay_minutes'") or '30'
+    vvipdelay=await p.fetchval("SELECT value FROM settings WHERE key='vvip_code_delay_minutes'") or '15'
+    vipmediadelay=await p.fetchval("SELECT value FROM settings WHERE key='vip_media_send_delay_ms'") or '2000'
+    vvipmediadelay=await p.fetchval("SELECT value FROM settings WHERE key='vvip_media_send_delay_ms'") or '1000'
     wm=await p.fetchval("SELECT value FROM settings WHERE key='default_watermark_enabled'") or 'on'
     wmtext=await p.fetchval("SELECT value FROM settings WHERE key='watermark_text'") or '(default)'
     chat=await p.fetchval("SELECT value FROM settings WHERE key='admin_chat_enabled'") or 'on'
     kb=InlineKeyboardMarkup(inline_keyboard=[
-      [InlineKeyboardButton(text=f'Jeda media: {delay} ms',callback_data='admsetting:media_send_delay_ms')],
-      [InlineKeyboardButton(text=f'Jeda VIP: {vipdelay} menit',callback_data='admsetting:vip_code_delay_minutes')],
+      [InlineKeyboardButton(text=f'Jeda media umum: {delay} ms',callback_data='admsetting:media_send_delay_ms')],
+      [InlineKeyboardButton(text=f'Jeda buka code VIP: {vipdelay} menit',callback_data='admsetting:vip_code_delay_minutes')],
+      [InlineKeyboardButton(text=f'Jeda buka code VVIP: {vvipdelay} menit',callback_data='admsetting:vvip_code_delay_minutes')],
+      [InlineKeyboardButton(text=f'Jeda kirim media VIP: {vipmediadelay} ms',callback_data='admsetting:vip_media_send_delay_ms')],
+      [InlineKeyboardButton(text=f'Jeda kirim media VVIP: {vvipmediadelay} ms',callback_data='admsetting:vvip_media_send_delay_ms')],
       [InlineKeyboardButton(text=f'Watermark default: {wm}',callback_data='admsetting:default_watermark_enabled')],
       [InlineKeyboardButton(text='✍️ Teks watermark',callback_data='admsetting:watermark_text')],
       [InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]])
@@ -1222,10 +1231,10 @@ async def admin_setting_save(m, state: FSMContext):
     if key not in SETTING_LABELS: await state.clear(); return await m.answer('Sesi setting tidak valid.')
     raw=(m.text or '').strip()
     if raw.lower()=='cancel': await state.clear(); return await m.answer('Dibatalkan.')
-    if key in {'media_send_delay_ms','vip_code_delay_minutes','force_channel_id','notice_sub_channel_id'}:
+    if key in {'media_send_delay_ms','vip_code_delay_minutes','vvip_code_delay_minutes','vip_media_send_delay_ms','vvip_media_send_delay_ms','force_channel_id','notice_sub_channel_id'}:
         try: number=int(raw)
         except ValueError: return await m.answer('Nilai harus berupa angka.')
-        limits={'media_send_delay_ms':(0,30000),'vip_code_delay_minutes':(0,1440),'force_channel_id':(-1009999999999,0),'notice_sub_channel_id':(-1009999999999,0)}
+        limits={'media_send_delay_ms':(0,30000),'vip_media_send_delay_ms':(0,30000),'vvip_media_send_delay_ms':(0,30000),'vip_code_delay_minutes':(0,1440),'vvip_code_delay_minutes':(0,1440),'force_channel_id':(-1009999999999,0),'notice_sub_channel_id':(-1009999999999,0)}
         lo,hi=limits[key]
         if key.endswith('_channel_id'):
             if number>0: return await m.answer('ID channel biasanya negatif (contoh -1001234567890), atau 0 untuk nonaktif.')
@@ -1250,40 +1259,62 @@ async def admin_setting_save(m, state: FSMContext):
 @router.callback_query(F.data == 'adm:packages')
 async def admin_packages(c):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
-    p=await get_pool(); rows=await p.fetch('SELECT code,name,price,duration_days,active,link_url FROM vip_packages ORDER BY price DESC')
-    buttons=[]; lines=['💎 <b>SETTING VIP BOT — PAKET LANGGANAN</b>\n' ]
+    p=await get_pool()
+    rows=await p.fetch("SELECT code,name,price,duration_days,active,link_url,tier,daily_limit FROM vip_packages ORDER BY price ASC,duration_days ASC,name ASC")
+    buttons=[]
+    lines=['💎 <b>SETTING VIP BOT / VVIP BOT</b>',
+           'Paket diurutkan dari harga termurah. Perubahan di sini langsung dipakai pada menu /vipbot.']
     for r in rows:
+        tier=str(r['tier'] or 'vip').lower()
+        tier_name='VVIP' if tier=='vvip' else 'VIP'
         state='ON' if r['active'] else 'OFF'
-        lines.append(f"• <code>{html.escape(r['code'])}</code> — {html.escape(r['name'])} — Rp{int(r['price']):,} — {r['duration_days']} hari — {state} — {'LINK OK' if r['link_url'] else 'LINK BELUM DIISI'}".replace(',','.'))
-        buttons.append([InlineKeyboardButton(text=f"✏️ {r['code']} • Rp{int(r['price']):,}".replace(',','.'),callback_data=f"admpkg:edit:{r['code']}"),InlineKeyboardButton(text=f"{ 'Matikan' if r['active'] else 'Aktifkan' }",callback_data=f"admpkg:toggle:{r['code']}"),InlineKeyboardButton(text='🗑 Hapus',callback_data=f"admpkg:delete:{r['code']}")])
-    buttons.append([InlineKeyboardButton(text='➕ Tambah Paket VIP',callback_data='admpkg:add')])
+        lines.append(f"\n• <code>{html.escape(str(r['code']))}</code> — {tier_name} — {html.escape(str(r['name']))} — Rp{int(r['price']):,} — {int(r['duration_days'])} hari — {int(r['daily_limit'])}x/hari — {state}".replace(',','.'))
+        buttons.append([
+            InlineKeyboardButton(text=f"✏️ {tier_name} {str(r['name'])[:18]} • Rp{int(r['price']):,}".replace(',','.'),callback_data=f"admpkg:edit:{r['code']}"),
+            InlineKeyboardButton(text='Matikan' if r['active'] else 'Aktifkan',callback_data=f"admpkg:toggle:{r['code']}"),
+            InlineKeyboardButton(text='🗑 Hapus',callback_data=f"admpkg:delete:{r['code']}")
+        ])
+    buttons.append([InlineKeyboardButton(text='➕ Tambah Paket VIP/VVIP',callback_data='admpkg:add')])
     buttons.append([InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')])
     await c.message.edit_text('\n'.join(lines),parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
 
 @router.callback_query(F.data == 'admpkg:add')
 async def admin_package_add_start(c,state: FSMContext):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
     await state.set_state(AdminState.package_add)
-    await c.message.answer('Kirim format: <code>code | Nama paket | harga | durasi hari | link Telegram</code>\nContoh: <code>premium | PREMIUM ACCESS | 100000 | 30 | https://t.me/+invite</code>',parse_mode='HTML')
+    await c.message.answer(
+        'Kirim format:\\n<code>tier | code | nama paket | harga | durasi hari | kuota buka/hari | link Telegram (opsional)</code>\\n'
+        'tier isi <code>vip</code> atau <code>vvip</code>.\\n'
+        'Contoh: <code>vip | vip_4d | VIP 4 Hari | 30000 | 4 | 3 |</code>',
+        parse_mode='HTML')
     await c.answer()
+
 
 @router.message(AdminState.package_add)
 async def admin_package_add_save(m,state: FSMContext):
     if not await admin_access(m.from_user.id): await state.clear(); return
     parts=[x.strip() for x in (m.text or '').split('|')]
-    if len(parts) not in (4,5): return await m.answer('Format: code | nama | harga | hari | link Telegram (opsional)')
-    code,name=parts[0],parts[1]
-    link=parts[4] if len(parts)==5 else ''
-    try: price,days=int(parts[2]),int(parts[3])
-    except ValueError: return await m.answer('Harga dan durasi harus angka.')
+    if len(parts) not in (6,7):
+        return await m.answer('Format: tier | code | nama | harga | hari | kuota/hari | link Telegram (opsional)')
+    tier,code,name=parts[0].lower(),parts[1],parts[2]
+    link=parts[6] if len(parts)==7 else ''
+    try: price,days,daily_limit=int(parts[3]),int(parts[4]),int(parts[5])
+    except ValueError: return await m.answer('Harga, durasi, dan kuota harus angka.')
+    if tier not in {'vip','vvip'}: return await m.answer('Tier harus vip atau vvip.')
     if not re.fullmatch(r'[A-Za-z0-9_-]{2,32}',code): return await m.answer('Code paket hanya boleh huruf, angka, _ dan - (2–32 karakter).')
-    if not name or not 1000<=price<=10000000 or not 1<=days<=3650: return await m.answer('Nama wajib, harga Rp1.000–10.000.000, durasi 1–3650 hari.')
+    if not name or not 1000<=price<=10000000 or not 1<=days<=3650 or not 1<=daily_limit<=10000:
+        return await m.answer('Nama wajib, harga Rp1.000–10.000.000, durasi 1–3650 hari, kuota 1–10000 kali/hari.')
     if link and not link.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('Link harus berupa URL Telegram https://t.me/...')
     try:
-        await (await get_pool()).execute('INSERT INTO vip_packages(code,name,price,duration_days,active,link_url) VALUES($1,$2,$3,$4,TRUE,$5)',code,name[:100],price,days,link)
+        await (await get_pool()).execute(
+            'INSERT INTO vip_packages(code,name,price,duration_days,active,link_url,tier,daily_limit) VALUES($1,$2,$3,$4,TRUE,$5,$6,$7)',
+            code,name[:100],price,days,link,tier,daily_limit)
     except Exception:
         return await m.answer('Code paket sudah digunakan atau gagal disimpan.')
-    await state.clear(); await m.answer(f'✅ Paket VIP <code>{html.escape(code)}</code> ditambahkan.',parse_mode='HTML')
+    await state.clear()
+    await m.answer(f'✅ Paket {tier.upper()} <code>{html.escape(code)}</code> ditambahkan. Menu /vipbot otomatis mengikuti harga terbaru.',parse_mode='HTML')
+
 
 @router.callback_query(F.data.startswith('admpkg:toggle:'))
 async def admin_package_toggle(c):
@@ -1293,36 +1324,50 @@ async def admin_package_toggle(c):
     await c.answer('Status paket diperbarui.' if r else 'Paket tidak ditemukan.')
     await admin_packages(c)
 
+
 @router.callback_query(F.data.startswith('admpkg:edit:'))
 async def admin_package_edit(c,state: FSMContext):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
     code=c.data.rsplit(':',1)[1]
-    r=await (await get_pool()).fetchrow('SELECT code,name,price,duration_days,link_url FROM vip_packages WHERE code=$1',code)
+    r=await (await get_pool()).fetchrow('SELECT code,name,price,duration_days,link_url,tier,daily_limit FROM vip_packages WHERE code=$1',code)
     if not r: return await c.answer('Paket tidak ditemukan.',show_alert=True)
-    await state.set_state(AdminState.package_value); await state.update_data(package_code=code)
-    await c.message.answer(f"Edit paket {html.escape(code)}\nNilai sekarang: nama={html.escape(r['name'])}, harga={r['price']}, hari={r['duration_days']}, link={html.escape(str(r['link_url'] or '-'))}\nKirim format: <code>Nama paket | harga | hari | link Telegram</code>",parse_mode='HTML')
+    await state.set_state(AdminState.package_value)
+    await state.update_data(package_code=code)
+    await c.message.answer(
+        f"Edit paket <code>{html.escape(code)}</code>\\n"
+        f"Saat ini: tier={r['tier']}, nama={html.escape(r['name'])}, harga={r['price']}, hari={r['duration_days']}, kuota/hari={r['daily_limit']}, link={html.escape(str(r['link_url'] or '-'))}\\n"
+        'Kirim format: <code>nama | harga | hari | kuota/hari | tier(vip/vvip) | link Telegram</code>',
+        parse_mode='HTML')
     await c.answer()
+
 
 @router.message(AdminState.package_value)
 async def admin_package_save(m,state: FSMContext):
     if not await admin_access(m.from_user.id): await state.clear(); return
     d=await state.get_data(); code=str(d.get('package_code') or '')
     parts=[x.strip() for x in (m.text or '').split('|')]
-    if len(parts) not in (3,4): return await m.answer('Format: Nama paket | harga | hari | link Telegram')
-    try: price,days=int(parts[1]),int(parts[2])
-    except ValueError: return await m.answer('Harga dan hari harus angka.')
-    if not parts[0] or not 1000<=price<=10000000 or not 1<=days<=3650: return await m.answer('Nama wajib, harga Rp1.000–10.000.000, durasi 1–3650 hari.')
-    link=parts[3] if len(parts)==4 else str((await (await get_pool()).fetchrow('SELECT link_url FROM vip_packages WHERE code=$1',code))['link_url'] or '')
+    if len(parts) not in (5,6): return await m.answer('Format: nama | harga | hari | kuota/hari | tier(vip/vvip) | link Telegram (opsional)')
+    try: price,days,daily_limit=int(parts[1]),int(parts[2]),int(parts[3])
+    except ValueError: return await m.answer('Harga, hari, dan kuota harus angka.')
+    tier=parts[4].lower()
+    if tier not in {'vip','vvip'}: return await m.answer('Tier harus vip atau vvip.')
+    if not parts[0] or not 1000<=price<=10000000 or not 1<=days<=3650 or not 1<=daily_limit<=10000:
+        return await m.answer('Nama wajib, harga Rp1.000–10.000.000, durasi 1–3650 hari, kuota 1–10000 kali/hari.')
+    old=await (await get_pool()).fetchrow('SELECT link_url FROM vip_packages WHERE code=$1',code)
+    if not old: await state.clear(); return await m.answer('Paket tidak ditemukan.')
+    link=parts[5] if len(parts)==6 else str(old['link_url'] or '')
     if link and not link.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('Link harus berupa URL Telegram https://t.me/...')
-    await (await get_pool()).execute('UPDATE vip_packages SET name=$1,price=$2,duration_days=$3,link_url=$4 WHERE code=$5',parts[0][:100],price,days,link,code)
-    await state.clear(); await m.answer('✅ Paket VIP diperbarui.')
+    await (await get_pool()).execute('UPDATE vip_packages SET name=$1,price=$2,duration_days=$3,daily_limit=$4,tier=$5,link_url=$6 WHERE code=$7',parts[0][:100],price,days,daily_limit,tier,link,code)
+    await state.clear()
+    await m.answer('✅ Paket VIP/VVIP diperbarui. Menu /vipbot otomatis mengikuti pengaturan baru.')
+
 
 @router.callback_query(F.data.startswith('admpkg:delete:'))
 async def admin_package_delete(c):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
     code=c.data.rsplit(':',1)[1]
     await (await get_pool()).execute('DELETE FROM vip_packages WHERE code=$1',code)
-    await c.answer('Paket VIP dihapus.')
+    await c.answer('Paket VIP/VVIP dihapus.')
     await admin_packages(c)
 
 
@@ -1485,8 +1530,8 @@ async def admin_user_action(c):
     if action=='ban' and (uid==OWNER_ID or (target and target['is_admin'])): return await c.answer('Admin/owner tidak bisa diblokir dari menu ini.',show_alert=True)
     if action=='ban': await p.execute('UPDATE users SET banned=TRUE WHERE user_id=$1',uid)
     elif action=='unban': await p.execute('UPDATE users SET banned=FALSE WHERE user_id=$1',uid)
-    elif action=='vip': await p.execute("UPDATE users SET vip=TRUE,vip_until=GREATEST(COALESCE(vip_until,NOW()),NOW())+INTERVAL '30 days',vip_plan_days=30,vip_daily_limit=30 WHERE user_id=$1",uid)
-    elif action=='member': await p.execute('UPDATE users SET vip=FALSE,vip_until=NULL,vip_plan_days=0,vip_daily_limit=0 WHERE user_id=$1',uid)
+    elif action=='vip': await p.execute("UPDATE users SET vip=TRUE,vip_until=GREATEST(COALESCE(vip_until,NOW()),NOW())+INTERVAL '30 days',vip_plan_days=30,vip_daily_limit=30,vip_tier='vip' WHERE user_id=$1",uid)
+    elif action=='member': await p.execute("UPDATE users SET vip=FALSE,vip_until=NULL,vip_plan_days=0,vip_daily_limit=0,vip_tier='vip' WHERE user_id=$1",uid)
     else: return await c.answer('Aksi tidak dikenal.',show_alert=True)
     await c.answer('Perubahan user disimpan.')
     await c.message.edit_text(f'✅ Perubahan user <code>{uid}</code> berhasil disimpan: <b>{html.escape(action.upper())}</b>.',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🔐 User Security',callback_data='adm:security')],[InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]]))

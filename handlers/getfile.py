@@ -306,7 +306,18 @@ async def send_page(bot, chat_id, code, media, page, access_expires_at=None, per
     pool=await get_pool()
     file_settings = await pool.fetchrow("SELECT auto_delete,allow_forward,watermark_enabled FROM files WHERE code=$1", code)
     try:
-        delay_ms=max(0,min(30000,int(await pool.fetchval("SELECT value FROM settings WHERE key='media_send_delay_ms'") or MEDIA_SEND_DELAY_MS)))
+        user_tier = await pool.fetchval(
+            "SELECT CASE WHEN vip=TRUE AND (vip_until IS NULL OR vip_until>NOW()) THEN COALESCE(vip_tier,'vip') ELSE 'free' END FROM users WHERE user_id=$1",
+            chat_id,
+        )
+        if user_tier == 'vvip':
+            delay_key = 'vvip_media_send_delay_ms'
+        elif user_tier == 'vip':
+            delay_key = 'vip_media_send_delay_ms'
+        else:
+            delay_key = 'media_send_delay_ms'
+        delay_value = await pool.fetchval("SELECT value FROM settings WHERE key=$1", delay_key)
+        delay_ms=max(0,min(30000,int(delay_value or MEDIA_SEND_DELAY_MS)))
     except Exception:
         delay_ms=max(0,int(MEDIA_SEND_DELAY_MS))
     auto_delete = bool(file_settings and file_settings['auto_delete'])
@@ -510,14 +521,22 @@ async def openvip(c):
     f=await get_file(code)
     if not f:
         return await c.message.answer(_L(await _lang(c.from_user.id),'not_found'))
+    from utils.economy import vip_allowed, vip_cooldown_remaining
+    if not await vip_allowed(c.from_user.id, code):
+        remaining = await vip_cooldown_remaining(c.from_user.id, code)
+        return await c.message.answer(
+            f"⏳ <b>Jeda buka code masih aktif.</b>\\nCoba lagi sekitar {remaining} menit lagi.",
+            parse_mode="HTML",
+        )
     ok,_,reason,_=await unlock(c.from_user.id,code,int(f['media_count']),'vip')
     if not ok:
         if reason=='vip_quota':
             p=await get_pool()
-            days=int(await p.fetchval("SELECT vip_plan_days FROM users WHERE user_id=$1",c.from_user.id) or 1)
-            package=await p.fetchrow("SELECT code,name FROM vip_packages WHERE duration_days=$1 AND active ORDER BY price LIMIT 1",days)
-            label=package['name'] if package else f'VIP {days} Hari'
-            cb=f"vip:{package['code']}" if package else "buy_vip"
+            user_vip=await p.fetchrow("SELECT vip_plan_days,vip_tier FROM users WHERE user_id=$1",c.from_user.id)
+            days=int(user_vip["vip_plan_days"] or 1) if user_vip else 1
+            tier=str(user_vip["vip_tier"] or "vip") if user_vip else "vip"
+            label="VVIP Bot" if tier=="vvip" else "VIP Bot"
+            cb=f"vipcat:{tier}"
             return await c.message.answer(
                 f"⚠️ <b>Kuota buka CODE VIP hari ini sudah habis.</b>\n\n💎 Paket kamu: <b>{html.escape(label)}</b>",
                 parse_mode='HTML',

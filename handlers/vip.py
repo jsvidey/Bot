@@ -69,27 +69,55 @@ def _package_name(row, lang):
     return str(row["name"] or "VIP")
 
 
-@router.callback_query(F.data.startswith("buy_vip"))
+async def _show_bot_tier(target, tier: str):
+    uid = target.from_user.id
+    lang = await _lang(uid)
+    rows = await (await get_pool()).fetch(
+        "SELECT code,name,price,duration_days,daily_limit FROM vip_packages WHERE active AND tier=$1 ORDER BY price ASC, duration_days ASC, name ASC",
+        tier,
+    )
+    title = "💎 VIP BOT" if tier == "vip" else "🔥 VVIP BOT"
+    if not rows:
+        text = f"{title}\n\nBelum ada paket aktif. Silakan hubungi admin." if lang == "id" else f"{title}\n\nNo active packages are available. Please contact the admin."
+        buttons = [[InlineKeyboardButton(text="🔙 Kembali", callback_data="vipbot:home")]]
+    else:
+        lines = [title, "", "Paket diurutkan dari harga termurah ke termahal:" if lang == "id" else "Packages are sorted from lowest to highest price:", ""]
+        buttons = []
+        for r in rows:
+            price = f"Rp{int(r['price']):,}".replace(",", ".")
+            lines.append(f"• {r['name']} — buka code {int(r['daily_limit'])}x/hari — {price}")
+            buttons.append([InlineKeyboardButton(
+                text=f"{r['name']} • {price} • {int(r['daily_limit'])}x/hari",
+                callback_data=f"vip:{r['code']}",
+            )])
+        buttons.append([InlineKeyboardButton(text="🔙 Kembali", callback_data="vipbot:home")])
+        text = "\n".join(lines)
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    if isinstance(target, Message):
+        await target.answer(text, parse_mode="HTML", reply_markup=markup)
+    else:
+        await target.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+        await target.answer()
+
+
+@router.callback_query(F.data == "buy_vip")
 async def listvip(c):
     lang = await _lang(c.from_user.id)
-    rows = await (await get_pool()).fetch(
-        "SELECT code,name,price,duration_days FROM vip_packages WHERE active ORDER BY price"
-    )
-    kb = [
-        [
-            InlineKeyboardButton(
-                text=f'💎 {_package_name(r, lang)} • Rp{int(r["price"]):,}'.replace(",", "."),
-                callback_data=f'vip:{r["code"]}',
-            )
-        ]
-        for r in rows
-    ]
-    kb.extend([[InlineKeyboardButton(text='🛍️ Ambil Sebagian',callback_data='vipsome')],[InlineKeyboardButton(text='🛒 Ambil Semua',callback_data='vipall')],[InlineKeyboardButton(text='ℹ️ About',callback_data='vipabout'),InlineKeyboardButton(text='🎁 Donasi',url='https://t.me/+ezE2-f-YtEo4NzU1')],[InlineKeyboardButton(text=_t(lang, "back"), callback_data="home")]])
-    await c.message.edit_text(
-        _t(lang, "buy_vip"),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
-    )
+    text = "👑 <b>VIP BOT</b>\n\nPilih jenis paket:" if lang == "id" else "👑 <b>VIP BOT</b>\n\nChoose a package type:"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💎 VIP Bot", callback_data="vipcat:vip"), InlineKeyboardButton(text="🔥 VVIP Bot", callback_data="vipcat:vvip")],
+        [InlineKeyboardButton(text="🔙 Kembali", callback_data="home")],
+    ])
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("vipcat:"))
+async def vip_category(c):
+    tier = c.data.split(":", 1)[1]
+    if tier not in {"vip", "vvip"}:
+        return await c.answer("Kategori tidak valid.", show_alert=True)
+    await _show_bot_tier(c, tier)
 
 
 @router.callback_query(F.data.startswith("vipbuy:"))
@@ -124,10 +152,11 @@ async def choose(c):
                 callback_data=f"vip_manual:{code}",
             )
         ])
+    tier = str(r["tier"] or "vip")
     rows.append([
         InlineKeyboardButton(
             text=_t(lang, "back"),
-            callback_data="buy_vip",
+            callback_data=f"vipcat:{tier}",
         )
     ])
 
@@ -142,15 +171,27 @@ async def package_detail(c):
     lang = await _lang(c.from_user.id)
     code = c.data.split(":", 1)[1]
     r = await (await get_pool()).fetchrow("SELECT * FROM vip_packages WHERE code=$1 AND active", code)
-    if not r: return await c.answer(_t(lang, "unavailable"), show_alert=True)
-    price = f"Rp{int(r['price']):,}".replace(',', '.')
-    text = ("✨ <b>Detail Paket VVIP</b>\n\n📦 Nama Paket: <b>" + str(r['name']) + "</b>\n📝 Deskripsi: Dapatkan akses ke konten dan grup eksklusif setelah pembayaran berhasil.\n💰 Harga Normal: <b>" + price + "</b>\n\nSilakan klik tombol Bayar di bawah untuk melanjutkan!")
+    if not r:
+        return await c.answer(_t(lang, "unavailable"), show_alert=True)
+    price = f"Rp{int(r['price']):,}".replace(",", ".")
+    tier = str(r["tier"] or "vip")
+    tier_name = "VVIP Bot" if tier == "vvip" else "VIP Bot"
+    limit = int(r["daily_limit"] or 1)
+    text = (
+        f"📦 <b>{html.escape(str(r['name']))}</b>\n\n"
+        f"🏷️ Jenis: <b>{tier_name}</b>\n"
+        f"⏳ Durasi: <b>{int(r['duration_days'])} hari</b>\n"
+        f"🔓 Kuota buka code: <b>{limit} kali per hari</b>\n"
+        f"💰 Harga: <b>{price}</b>\n\n"
+        "Setelah pembayaran dikonfirmasi, status aktif otomatis."
+    )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Bayar Sekarang", callback_data=f"vipbuy:{code}")],
-        [InlineKeyboardButton(text="🔙 Kembali", callback_data="buy_vip")]
+        [InlineKeyboardButton(text="🔙 Kembali", callback_data=f"vipcat:{tier}")],
     ])
     await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await c.answer()
+
 
 
 def _vipg_text(lang, id_text, en_text):
@@ -580,11 +621,11 @@ async def pay(c, state):
             from handlers.payments import ManualProofState
             manual = await p.fetchrow("""
                 INSERT INTO manual_payments(user_id,amount,target_code,target_type,quantity,status)
-                VALUES($1,$2,NULL,'vip',$3,'pending') RETURNING id
-            """, c.from_user.id, int(r["price"]), int(r["duration_days"]))
+                VALUES($1,$2,$3,'vip',$4,'pending') RETURNING id
+            """, c.from_user.id, int(r["price"]), code, int(r["duration_days"]))
             manual_id = int(manual["id"])
             await state.set_state(ManualProofState.proof)
-            await state.update_data(kind="vip", quantity=int(r["duration_days"]), amount=int(r["price"]), target_code=None, manual_id=manual_id)
+            await state.update_data(kind="vip", quantity=int(r["duration_days"]), amount=int(r["price"]), target_code=code, manual_id=manual_id)
             caption = (f"🧾 <b>QR MANUAL VIP</b>\n\n{_package_name(r, lang)}\n💰 Rp{int(r['price']):,}\n\n".replace(",", ".")
                        + "Kedua provider otomatis gagal. Silakan bayar dengan QR ini lalu kirim screenshot bukti.")
             qr_message = await c.message.answer_photo(qr, caption=caption + f"\n\n🧾 ID: <code>{manual_id}</code>", parse_mode="HTML",
@@ -659,15 +700,15 @@ async def vip_manual(c, state):
     # handler only accepts proofs linked to an existing pending row.
     manual = await p.fetchrow("""
         INSERT INTO manual_payments(user_id,amount,target_code,target_type,quantity,status)
-        VALUES($1,$2,NULL,'vip',$3,'pending') RETURNING id
-    """, c.from_user.id, int(r["price"]), int(r["duration_days"]))
+        VALUES($1,$2,$3,'vip',$4,'pending') RETURNING id
+    """, c.from_user.id, int(r["price"]), code, int(r["duration_days"]))
     manual_id = int(manual["id"])
     await state.set_state(ManualProofState.proof)
     await state.update_data(
         kind="vip",
         quantity=int(r["duration_days"]),
         amount=int(r["price"]),
-        target_code=None,
+        target_code=code,
         manual_id=manual_id,
     )
 
@@ -691,8 +732,5 @@ async def vip_manual(c, state):
 
 @router.message(F.text.in_({"💎 VIP Access", "Lihat Daftar VIP", "💳 VIP Access"}))
 async def vip_access_menu(m: Message):
-    lang=await _lang(m.from_user.id)
-    rows=await (await get_pool()).fetch("SELECT code,name,price FROM vip_packages WHERE active ORDER BY price")
-    buttons=[[InlineKeyboardButton(text=f"{r['name']} • Rp{int(r['price']):,}".replace(',', '.'),callback_data=f"vip:{r['code']}")] for r in rows]
-    buttons += [[InlineKeyboardButton(text="🛍️ Ambil Sebagian",callback_data="vipsome")],[InlineKeyboardButton(text="🛒 Ambil Semua",callback_data="vipall")],[InlineKeyboardButton(text="ℹ️ About",callback_data="vipabout"),InlineKeyboardButton(text="🎁 Donasi",callback_data="vipdonate")]]
-    await m.answer("📚 <b>Daftar VVIP Bot</b>\n\nInfo Nilai\n<b>ALL VIP GROUP</b>\nKeterangan: Daftar paket eksklusif. Klik paket untuk detail lengkap dan penawaran spesial.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    from handlers.misc import vipbot_menu
+    await vipbot_menu(m)
