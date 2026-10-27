@@ -19,7 +19,8 @@ WELCOME = {
         "🚀 Ketik /start untuk refresh bot.\n"
         "👑 Ketik /vipbot untuk mendapatkan akses semua Code di bot.\n"
         "💎 Ketik /vip untuk melihat akses Group VIP.\n"
-        "🔑 Ketik /code untuk melihat semua Code.\n\n"
+        "🔑 Ketik /code untuk melihat semua Code.\n"
+        "🧑‍🧑‍🧒‍🧒 Ketik /group untuk info kumpulan group.\n\n"
         "List group👇\n"
         '<a href="https://t.me/+vM6UWm69_6gyMjNk">Channel Update</a>\n'
         '<a href="https://t.me/noticsaluran">Channel Big Update Rare</a>\n'
@@ -31,7 +32,8 @@ WELCOME = {
         "🚀 Type /start to refresh the bot.\n"
         "👑 Type /vipbot to get access to all Codes in the bot.\n"
         "💎 Type /vip to view VIP Group access.\n"
-        "🔑 Type /code to browse all Codes.\n\n"
+        "🔑 Type /code to browse all Codes.\n"
+        "🧑‍🧑‍🧒‍🧒 Type /group for group information.\n\n"
         "Group list👇\n"
         '<a href="https://t.me/+vM6UWm69_6gyMjNk">Updates Channel</a>\n'
         '<a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\n'
@@ -205,8 +207,8 @@ async def vipbot_command(m: Message):
 
 @router.message(F.chat.type == "private", Command("vip"))
 async def vip_group_command(m: Message):
-    from handlers.misc import vip_selector_menu
-    await vip_selector_menu(m)
+    from handlers.vip import show_vip_group_menu
+    await show_vip_group_menu(m)
 
 @router.message(F.chat.type == "private", Command("group"))
 async def group_command(m: Message):

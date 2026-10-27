@@ -1,5 +1,6 @@
+import html
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
+from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, LabeledPrice, PreCheckoutQuery
 from database import get_pool
 from utils.payments import create_purchase, qr_bytes, enabled
 from utils.callback_loading import loading
@@ -151,10 +152,312 @@ async def package_detail(c):
     await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await c.answer()
 
+
+def _vipg_text(lang, id_text, en_text):
+    return id_text if lang == "id" else en_text
+
+
+async def show_vip_group_menu(target):
+    """Entry screen for /vip: payment instructions and VIP Group actions."""
+    uid = target.from_user.id
+    lang = await _lang(uid)
+    text = (
+        "💳 <b>CARA MELAKUKAN PEMBAYARAN</b>\n"
+        "🔹 Tekan /start\n"
+        "🔹 Tekan Lihat Daftar VIP\n"
+        "🔹 Pilih daftar yang diinginkan\n"
+        "🔹 Tekan tombol Bayar Harga Normal\n"
+        "🔹 Lakukan pembayaran dan link grup akan dikirimkan secara otomatis."
+        if lang == "id" else
+        "💳 <b>HOW TO PAY</b>\n"
+        "🔹 Press /start\n"
+        "🔹 Tap View VIP List\n"
+        "🔹 Choose the package you want\n"
+        "🔹 Tap Pay Normal Price\n"
+        "🔹 Complete the payment and the group link will be sent automatically."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📚 Lihat Daftar VIP" if lang == "id" else "📚 View VIP List", callback_data="vg:list")],
+        [InlineKeyboardButton(text="ℹ️ About", callback_data="vipabout"),
+         InlineKeyboardButton(text="❤️‍🔥 Donasi" if lang == "id" else "❤️‍🔥 Donate", callback_data="vipdonate")],
+    ])
+    if isinstance(target, Message):
+        await target.answer(text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await target.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await target.answer()
+
+
+def _vipg_back(lang, callback="vg:home"):
+    return InlineKeyboardButton(text="🔙 Kembali ke VIP" if lang == "id" else "🔙 Back to VIP", callback_data=callback)
+
+
+async def _vipg_list(c, edit=True):
+    lang = await _lang(c.from_user.id)
+    rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_group_packages WHERE active ORDER BY price, name")
+    buttons = [[InlineKeyboardButton(
+        text=f"{r['name']} {int(r['price'])//1000}k" if lang == "id" else f"{r['name']} Rp{int(r['price']):,}".replace(",", "."),
+        callback_data=f"vg:detail:{r['code']}"
+    )] for r in rows]
+    buttons += [
+        [InlineKeyboardButton(text="🛍️ Ambil sebagian" if lang == "id" else "🛍️ Select some", callback_data="vg:some")],
+        [InlineKeyboardButton(text="🛒 Borong semuanya" if lang == "id" else "🛒 Get everything", callback_data="vg:all")],
+        [_vipg_back(lang)],
+    ]
+    text = (
+        "📚 <b>Daftar VIP Bot</b>\n\nKeterangan: Daftar paket eksklusif. Klik paket untuk detail lengkap dan penawaran spesial."
+        if lang == "id" else
+        "📚 <b>VIP Group List</b>\n\nExclusive packages. Select a package to view its details and special offer."
+    )
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.answer()
+
+
+async def _vipg_pay(c, codes):
+    lang = await _lang(c.from_user.id)
+    codes = list(dict.fromkeys(str(x) for x in codes if x))
+    if not codes:
+        return await c.answer("Pilih minimal satu paket dulu." if lang == "id" else "Choose at least one package first.", show_alert=True)
+    p = await get_pool()
+    rows = await p.fetch("SELECT code,name,price FROM vip_group_packages WHERE active AND code=ANY($1::text[])", codes)
+    if len(rows) != len(codes):
+        return await c.answer("Paket tidak tersedia lagi." if lang == "id" else "One or more packages are no longer available.", show_alert=True)
+    amount = sum(int(r["price"]) for r in rows)
+    days = 30
+    meta = {"vip_group_package_codes": codes}
+    result = None
+    provider_used = None
+    for provider in ("bayargg", "cashi"):
+        if await enabled(provider):
+            result, status = await create_purchase(c.from_user.id, "vip", days, amount, provider, c.from_user.full_name, metadata=meta)
+            if result:
+                provider_used = provider
+                break
+    if not result:
+        return await c.answer(
+            "Pembayaran sedang tidak tersedia. Coba lagi nanti atau hubungi admin." if lang == "id" else
+            "Payment is currently unavailable. Try again later or contact the admin.",
+            show_alert=True
+        )
+    qr = qr_bytes(result.get("qr_string"))
+    title = "Pembelian VIP Group" if lang == "id" else "VIP Group purchase"
+    paytext = (
+        f"🛒 <b>{title}</b>\n💰 Total: <b>Rp{amount:,}</b>\n🏦 {provider_used.upper()}\n🧾 Invoice: <code>{result['invoice_id']}</code>\n\nSetelah membayar, tekan Cek Pembayaran."
+        if lang == "id" else
+        f"🛒 <b>{title}</b>\n💰 Total: <b>Rp{amount:,}</b>\n🏦 {provider_used.upper()}\n🧾 Invoice: <code>{result['invoice_id']}</code>\n\nAfter payment, tap Check Payment."
+    ).replace(",", ".")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Cek Pembayaran" if lang == "id" else "🔄 Check Payment", callback_data=f"paycheck:{result['invoice_id']}")],
+        [InlineKeyboardButton(text="❌ Batal" if lang == "id" else "❌ Cancel", callback_data=f"paycancel:{result['invoice_id']}")],
+    ])
+    await c.answer()
+    if qr:
+        await c.message.answer_photo(BufferedInputFile(qr, filename="vip-group.png"), caption=paytext, parse_mode="HTML", reply_markup=kb)
+    else:
+        await c.message.answer(paytext, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data == "vg:home")
+async def vipg_home(c):
+    await show_vip_group_menu(c)
+
+
+@router.callback_query(F.data == "vg:list")
+async def vipg_list(c):
+    await _vipg_list(c)
+
+
+@router.message(F.chat.type == "private", F.text.in_({"📚 Lihat Daftar VIP", "📚 View VIP List", "Lihat Daftar VIP", "View VIP List"}))
+async def vipg_list_message(m: Message):
+    lang = await _lang(m.from_user.id)
+    rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_group_packages WHERE active ORDER BY price,name")
+    buttons = [[InlineKeyboardButton(
+        text=f"{r['name']} {int(r['price'])//1000}k" if lang == "id" else f"{r['name']} Rp{int(r['price']):,}".replace(",", "."),
+        callback_data=f"vg:detail:{r['code']}"
+    )] for r in rows]
+    buttons += [
+        [InlineKeyboardButton(text="🛍️ Ambil sebagian" if lang == "id" else "🛍️ Select some", callback_data="vg:some")],
+        [InlineKeyboardButton(text="🛒 Borong semuanya" if lang == "id" else "🛒 Get everything", callback_data="vg:all")],
+        [_vipg_back(lang)],
+    ]
+    text = ("📚 <b>Daftar VIP Bot</b>\n\nKeterangan: Daftar paket eksklusif. Klik paket untuk detail lengkap dan penawaran spesial."
+            if lang == "id" else
+            "📚 <b>VIP Group List</b>\n\nExclusive packages. Select a package to view its details and special offer.")
+    await m.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data.startswith("vg:detail:"))
+async def vipg_detail(c):
+    lang = await _lang(c.from_user.id)
+    code = c.data.split(":", 2)[2]
+    row = await (await get_pool()).fetchrow("SELECT * FROM vip_group_packages WHERE code=$1 AND active", code)
+    if not row:
+        return await c.answer("Paket tidak tersedia." if lang == "id" else "Package unavailable.", show_alert=True)
+    price = f"Rp{int(row['price']):,}".replace(",", ".")
+    name = str(row["name"])
+    desc = str(row["description"] or "")
+    text = (
+        f"✨ <b>Detail Paket VVIP</b>\n\n📦 <b>Nama Paket:</b> {html.escape(name)}\n📝 <b>Deskripsi:</b> {html.escape(desc)}\n💰 <b>Harga Normal:</b> <b>{price}</b>\n\nSilakan klik tombol Bayar di bawah untuk melanjutkan!"
+        if lang == "id" else
+        f"✨ <b>VVIP Package Details</b>\n\n📦 <b>Package:</b> {html.escape(name)}\n📝 <b>Description:</b> {html.escape(desc)}\n💰 <b>Regular price:</b> <b>{price}</b>\n\nTap Pay Now below to continue."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Bayar sekarang" if lang == "id" else "💳 Pay now", callback_data=f"vg:pay:{code}")],
+        [InlineKeyboardButton(text="🔙 Kembali ke list VIP" if lang == "id" else "🔙 Back to VIP list", callback_data="vg:list")],
+    ])
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("vg:pay:"))
+async def vipg_pay_one(c):
+    code = c.data.split(":", 2)[2]
+    await _vipg_pay(c, [code])
+
+
+@router.callback_query(F.data.startswith("vg:some"))
+async def vipg_some(c):
+    lang = await _lang(c.from_user.id)
+    selected = c.data.split(":", 2)[2].split(",") if c.data.count(":") >= 2 and c.data.split(":", 2)[2] else []
+    selected = [x for x in selected if x]
+    rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_group_packages WHERE active ORDER BY price,name")
+    buttons, total = [], 0
+    for r in rows:
+        code = str(r["code"])
+        is_selected = code in selected
+        if is_selected:
+            total += int(r["price"])
+        next_codes = [x for x in selected if x != code]
+        if not is_selected:
+            next_codes.append(code)
+        callback = "vg:some:" + ",".join(next_codes)
+        buttons.append([InlineKeyboardButton(
+            text=f"{'✅' if is_selected else '⬜'} {r['name']} • Rp{int(r['price']):,}".replace(",", "."),
+            callback_data=callback[:64]
+        )])
+    buttons.append([InlineKeyboardButton(
+        text=f"💰 Total: Rp{total:,} ({len(selected)} paket)".replace(",", "."),
+        callback_data=("vg:paymany:" + ",".join(selected)) if selected else "vg:some"
+    )])
+    buttons.append([InlineKeyboardButton(text="🔙 Kembali ke daftar VIP" if lang == "id" else "🔙 Back to VIP list", callback_data="vg:list")])
+    text = (
+        "🛍️ <b>Pilih Paket VIP</b>\n\nPaket • Harga • Status\nPilih paket untuk mencentang atau membatalkan pilihan."
+        if lang == "id" else
+        "🛍️ <b>Select VIP Packages</b>\n\nPackage • Price • Status\nTap packages to select or unselect them."
+    )
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("vg:paymany:"))
+async def vipg_pay_many(c):
+    codes = c.data.split(":", 2)[2].split(",")
+    await _vipg_pay(c, codes)
+
+
+@router.callback_query(F.data == "vg:all")
+async def vipg_all(c):
+    lang = await _lang(c.from_user.id)
+    rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_group_packages WHERE active ORDER BY price,name")
+    if not rows:
+        return await c.answer("Belum ada paket aktif." if lang == "id" else "No active packages.", show_alert=True)
+    total = sum(int(r["price"]) for r in rows)
+    lines = ["🛒 <b>Ringkasan ambil semua VIP</b>" if lang == "id" else "🛒 <b>Get All VIP Summary</b>", ""]
+    for r in rows:
+        lines.append(f"• {html.escape(str(r['name']))} — Rp{int(r['price']):,}".replace(",", "."))
+    lines += ["", f"💰 <b>Total: Rp{total:,} ({len(rows)} paket)</b>".replace(",", ".") if lang == "id" else f"💰 <b>Total: Rp{total:,} ({len(rows)} packages)</b>".replace(",", ".")]
+    codes = ",".join(str(r["code"]) for r in rows)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Lakukan pembayaran Ambil Semua" if lang == "id" else "💳 Pay for All", callback_data=f"vg:paymany:{codes}")],
+        [InlineKeyboardButton(text="🔙 Kembali ke daftar VIP" if lang == "id" else "🔙 Back to VIP list", callback_data="vg:list")],
+    ])
+    await c.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    await c.answer()
+
+
 @router.callback_query(F.data == "vipabout")
 async def vip_about(c):
-    await c.message.edit_text("💳 <b>CARA MELAKUKAN PEMBAYARAN</b>\n\n🔹 Tekan /start\n🔹 Tekan Lihat Daftar VIP\n🔹 Pilih daftar yang diinginkan\n🔹 Tekan tombol Bayar Sekarang\n🔹 Lakukan pembayaran dan link akan dikirim setelah pembayaran terverifikasi.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Kembali",callback_data="buy_vip")]]))
+    lang = await _lang(c.from_user.id)
+    text = (
+        "🌟 <b>Tentang VIP Ini</b>\n\nSelamat datang! Saya adalah asisten otomatis yang dirancang untuk memberikan Anda kemudahan dalam mengakses grup VIP.\n\n"
+        "🤖 <b>Fungsi Utama Saya</b>\n"
+        "• Pembayaran — otomatis dan aman via QRIS\n"
+        "• Akses Instan — setelah transaksi berhasil\n"
+        "• Konfirmasi — tanpa menunggu konfirmasi manual\n\n"
+        "🚀 <b>Alur Penggunaan</b>\n"
+        "1. Pilih paket dari daftar VIP yang tersedia\n"
+        "2. Scan QRIS yang diberikan untuk membayar\n"
+        "3. Link undangan terkirim otomatis setelah pembayaran terkonfirmasi."
+        if lang == "id" else
+        "🌟 <b>About VIP</b>\n\nWelcome! I am an automated assistant designed to make accessing VIP groups easy.\n\n"
+        "🤖 <b>Key Features</b>\n"
+        "• Payment — automatic and secure via QRIS\n"
+        "• Instant access — after a successful transaction\n"
+        "• Confirmation — no manual confirmation wait\n\n"
+        "🚀 <b>How it works</b>\n"
+        "1. Choose a package from the VIP list\n"
+        "2. Scan the provided QRIS to pay\n"
+        "3. The invite link is sent automatically after payment is confirmed."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[_vipg_back(lang)]])
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
     await c.answer()
+
+
+@router.callback_query(F.data == "vipdonate")
+async def vip_donate(c):
+    lang = await _lang(c.from_user.id)
+    text = (
+        "❤️‍🔥 <b>Dukung Kami dengan Telegram Stars</b>\n\n"
+        "25 ⭐ — Paling ringan\n50 ⭐ — Dukungan dasar\n75 ⭐ — Dukungan sedang\n100 ⭐ — Dukungan maksimal\n\n"
+        "Setiap Star yang Anda berikan memberi kami semangat untuk terus berinovasi."
+        if lang == "id" else
+        "❤️‍🔥 <b>Support Us with Telegram Stars</b>\n\n"
+        "25 ⭐ — Small support\n50 ⭐ — Basic support\n75 ⭐ — Medium support\n100 ⭐ — Maximum support\n\n"
+        "Every Star you give motivates us to keep innovating."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="25 ⭐️", callback_data="vg:stars:25"), InlineKeyboardButton(text="50 ⭐️", callback_data="vg:stars:50")],
+        [InlineKeyboardButton(text="75 🌟", callback_data="vg:stars:75"), InlineKeyboardButton(text="100 💫", callback_data="vg:stars:100")],
+        [_vipg_back(lang)],
+    ])
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await c.answer()
+
+
+@router.callback_query(F.data.startswith("vg:stars:"))
+async def vipg_stars(c):
+    amount = int(c.data.rsplit(":", 1)[1])
+    lang = await _lang(c.from_user.id)
+    await c.answer()
+    await c.message.answer_invoice(
+        title=f"Support bot with {amount} Telegram Stars"[:32],
+        description=("Dukungan untuk pengembangan bot" if lang == "id" else "Support the development of this bot"),
+        payload=f"vip_donation_{amount}_{c.from_user.id}",
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice(label=f"Donation {amount} Stars", amount=amount)],
+    )
+
+
+@router.pre_checkout_query()
+async def vipg_stars_precheckout(q: PreCheckoutQuery):
+    if str(q.invoice_payload or "").startswith("vip_donation_") and q.currency == "XTR":
+        await q.answer(ok=True)
+    else:
+        await q.answer(ok=False, error_message="Invalid donation payment.")
+
+
+@router.message(F.successful_payment)
+async def vipg_stars_success(m: Message):
+    payment = m.successful_payment
+    if not payment or not str(payment.invoice_payload or "").startswith("vip_donation_"):
+        return
+    lang = await _lang(m.from_user.id)
+    await m.answer(
+        "❤️ Terima kasih atas dukungan Telegram Stars Anda!" if lang == "id" else
+        "❤️ Thank you for supporting us with Telegram Stars!"
+    )
 
 @router.callback_query(F.data.startswith("vipsome"))
 async def vip_some(c):

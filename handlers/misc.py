@@ -1,5 +1,4 @@
 from aiogram import Router,F
-from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -460,9 +459,9 @@ async def open_notice_info(c):
 
 async def vip_selector_menu(m: Message):
     lang = await _lang(m.from_user.id)
-    text = ("💎 <b>MENU VIP</b>\\n\\nPilih akses yang kamu butuhkan:"
+    text = ("💎 <b>MENU VIP</b>\n\nPilih akses yang kamu butuhkan:"
             if lang == "id" else
-            "💎 <b>VIP MENU</b>\\n\\nChoose the access you need:")
+            "💎 <b>VIP MENU</b>\n\nChoose the access you need:")
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👑 VIP Bot", callback_data="keyword_vipbot")],
         [InlineKeyboardButton(text="💎 VIP Group", callback_data="keyword_vipgroup")],
@@ -495,11 +494,6 @@ async def vip_group_menu(m: Message):
         [InlineKeyboardButton(text="🔔 Channel Notifikasi" if lang == "id" else "🔔 Notification Channel", url=DIRECT_NOTICE_URL)],
     ]
     await m.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-@router.message(F.chat.type == "private", Command("group"))
-async def group_command(m: Message):
-    await vip_group_menu(m)
-
 
 @router.message(F.chat.type=='private', F.text, ~F.text.startswith('/'))
 async def keyword_help(m:Message):
@@ -562,15 +556,8 @@ async def keyword_vipbot(c: CallbackQuery):
 
 @router.callback_query(F.data == "keyword_vipgroup")
 async def keyword_vipgroup(c: CallbackQuery):
-    await c.answer()
-    lang = await _lang(c.from_user.id)
-    buttons = [
-        [InlineKeyboardButton(text="👥 Grup Code" if lang == "id" else "👥 Code Group", url=DIRECT_GROUP_CODE_URL)],
-        [InlineKeyboardButton(text="📚 Channel Semua Code" if lang == "id" else "📚 All Codes Channel", url=DIRECT_ALL_CODE_URL)],
-        [InlineKeyboardButton(text="💾 Channel Backup" if lang == "id" else "💾 Backup Channel", url=DIRECT_BACKUP_URL)],
-        [InlineKeyboardButton(text="🔔 Channel Notifikasi" if lang == "id" else "🔔 Notification Channel", url=DIRECT_NOTICE_URL)],
-    ]
-    await c.message.answer(("💎 <b>VIP GROUP</b>\n\nPilih grup atau channel VIP yang ingin dibuka." if lang == "id" else "💎 <b>VIP GROUP</b>\n\nChoose a VIP group or channel."), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    from handlers.vip import show_vip_group_menu
+    await show_vip_group_menu(c)
 
 async def media_hint(m):
     from utils.admin_access import admin_access

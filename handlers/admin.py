@@ -56,7 +56,7 @@ async def admin_command(m):
 class AdminState(StatesGroup):
     broadcast=State(); edit_code=State(); edit_title=State(); edit_tags=State(); edit_price=State(); user_action=State(); move=State(); grant_open_user=State(); grant_open_code=State(); role_user=State()
     b2_name=State(); b2_region=State(); b2_bucket=State(); b2_key_id=State(); b2_app_key=State(); vip_channel_value=State()
-    setting_value=State(); package_value=State(); package_add=State(); edit_option=State(); welcome_id=State(); welcome_en=State(); server_name=State()
+    setting_value=State(); package_value=State(); package_add=State(); vipg_package_add=State(); vipg_package_edit=State(); edit_option=State(); welcome_id=State(); welcome_en=State(); server_name=State()
 
 def admin(uid): return is_config_admin(uid)
 async def val(key): return str(await (await get_pool()).fetchval("SELECT value FROM settings WHERE key=$1",key) or "off")
@@ -73,7 +73,8 @@ def kb():
   [InlineKeyboardButton(text='🎨 Upload/Delivery Defaults',callback_data='adm:defaults')],
   [InlineKeyboardButton(text='🗂 Server Categories',callback_data='adm:servers')],
   [InlineKeyboardButton(text='🧾 Manual Payment',callback_data='adm:manual'),InlineKeyboardButton(text='📊 Statistics',callback_data='adm:stats')],
-  [InlineKeyboardButton(text='💎 Setting VIP Bot',callback_data='adm:packages'),InlineKeyboardButton(text='📡 Force Join',callback_data='adm:channels')],
+  [InlineKeyboardButton(text='💎 Setting VIP Bot',callback_data='adm:packages'),InlineKeyboardButton(text='💎 Setting VIP Group /vip',callback_data='adm:vipgpackages')],
+   [InlineKeyboardButton(text='📡 Force Join',callback_data='adm:channels')],
   [InlineKeyboardButton(text='🔎 Dashboard Lengkap',callback_data='adm:overview')],
   [InlineKeyboardButton(text='🧾 Transaksi',callback_data='adm:transactions'),InlineKeyboardButton(text='🔐 User Security',callback_data='adm:security')],
   [InlineKeyboardButton(text='🩺 System Health',callback_data='adm:health'),InlineKeyboardButton(text='🚨 Bot Errors',callback_data='adm:errors')],
@@ -1324,6 +1325,105 @@ async def admin_package_delete(c):
     await c.answer('Paket VIP dihapus.')
     await admin_packages(c)
 
+
+@router.callback_query(F.data == 'adm:vipgpackages')
+async def admin_vipg_packages(c):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    p=await get_pool()
+    rows=await p.fetch("SELECT code,name,price,active,link_url,description FROM vip_group_packages ORDER BY price,name")
+    lines=['💎 <b>SETTING VIP GROUP (/vip)</b>','Atur nama, harga, status, deskripsi, dan link undangan paket VIP Group.']
+    buttons=[]
+    for r in rows:
+        state='ON' if r['active'] else 'OFF'
+        lines.append(f"\n• <code>{html.escape(str(r['code']))}</code> — {html.escape(str(r['name']))} — Rp{int(r['price']):,} — {state}\n  Link: {html.escape(str(r['link_url'] or 'BELUM DIISI'))}".replace(',','.'))
+        buttons.append([
+            InlineKeyboardButton(text=f"✏️ {str(r['name'])[:24]}",callback_data=f"admgpkg:edit:{r['code']}"),
+            InlineKeyboardButton(text='Matikan' if r['active'] else 'Aktifkan',callback_data=f"admgpkg:toggle:{r['code']}"),
+            InlineKeyboardButton(text='🗑 Hapus',callback_data=f"admgpkg:delete:{r['code']}")
+        ])
+    buttons += [[InlineKeyboardButton(text='➕ Tambah Paket VIP Group',callback_data='admgpkg:add')],
+                [InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]]
+    await c.message.edit_text('\n'.join(lines),parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+
+@router.callback_query(F.data == 'admgpkg:add')
+async def admin_vipg_package_add_start(c,state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    await state.set_state(AdminState.vipg_package_add)
+    await c.message.answer('Kirim format:\n<code>code | Nama paket | harga | link Telegram | deskripsi</code>\nContoh:\n<code>vip_baru | VIP BARU | 50000 | https://t.me/+invite | Akses grup VIP</code>\nLink dan deskripsi boleh ditulis - jika belum ada.',parse_mode='HTML')
+    await c.answer()
+
+
+@router.message(AdminState.vipg_package_add)
+async def admin_vipg_package_add_save(m: Message,state: FSMContext):
+    if not await admin_access(m.from_user.id): await state.clear(); return
+    parts=[x.strip() for x in (m.text or '').split('|')]
+    if len(parts) not in (3,4,5): return await m.answer('Format: code | nama | harga | link Telegram (opsional) | deskripsi (opsional)')
+    code,name=parts[0],parts[1]
+    try: price=int(parts[2])
+    except ValueError: return await m.answer('Harga harus angka.')
+    link=parts[3] if len(parts)>=4 and parts[3]!='-' else ''
+    desc=parts[4] if len(parts)>=5 and parts[4]!='-' else 'Dapatkan akses instan ke konten premium dan eksklusif setelah pembayaran berhasil.'
+    if not re.fullmatch(r'[A-Za-z0-9_-]{2,32}',code): return await m.answer('Code hanya boleh huruf, angka, _ dan - (2–32 karakter).')
+    if not name or not 1000<=price<=10000000: return await m.answer('Nama wajib dan harga Rp1.000–10.000.000.')
+    if link and not link.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('Link harus berupa URL Telegram https://t.me/...')
+    try:
+        await (await get_pool()).execute("INSERT INTO vip_group_packages(code,name,price,active,link_url,description) VALUES($1,$2,$3,TRUE,$4,$5)",code,name[:100],price,link,desc[:500])
+    except Exception:
+        return await m.answer('Code paket sudah digunakan atau gagal disimpan.')
+    await state.clear()
+    await m.answer('✅ Paket VIP Group ditambahkan.',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💎 Kelola VIP Group',callback_data='adm:vipgpackages')]]))
+
+
+@router.callback_query(F.data.startswith('admgpkg:toggle:'))
+async def admin_vipg_package_toggle(c):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    code=c.data.rsplit(':',1)[1]
+    await (await get_pool()).execute("UPDATE vip_group_packages SET active=NOT active WHERE code=$1",code)
+    await c.answer('Status paket diperbarui.')
+    await admin_vipg_packages(c)
+
+
+@router.callback_query(F.data.startswith('admgpkg:edit:'))
+async def admin_vipg_package_edit(c,state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    code=c.data.rsplit(':',1)[1]
+    r=await (await get_pool()).fetchrow("SELECT * FROM vip_group_packages WHERE code=$1",code)
+    if not r: return await c.answer('Paket tidak ditemukan.',show_alert=True)
+    await state.set_state(AdminState.vipg_package_edit)
+    await state.update_data(vipg_package_code=code)
+    await c.message.answer(
+        f"Edit paket <code>{html.escape(code)}</code>\nSaat ini: {html.escape(str(r['name']))} | {int(r['price'])} | {html.escape(str(r['link_url'] or '-'))} | {html.escape(str(r['description'] or '-'))}\n\nKirim:\n<code>Nama paket | harga | link Telegram | deskripsi</code>\nGunakan - untuk mengosongkan link.",
+        parse_mode='HTML')
+    await c.answer()
+
+
+@router.message(AdminState.vipg_package_edit)
+async def admin_vipg_package_edit_save(m: Message,state: FSMContext):
+    if not await admin_access(m.from_user.id): await state.clear(); return
+    d=await state.get_data(); code=str(d.get('vipg_package_code') or '')
+    parts=[x.strip() for x in (m.text or '').split('|')]
+    if len(parts)!=4: return await m.answer('Format: Nama paket | harga | link Telegram | deskripsi')
+    try: price=int(parts[1])
+    except ValueError: return await m.answer('Harga harus angka.')
+    link='' if parts[2]=='-' else parts[2]
+    desc='' if parts[3]=='-' else parts[3]
+    if not parts[0] or not 1000<=price<=10000000: return await m.answer('Nama wajib dan harga Rp1.000–10.000.000.')
+    if link and not link.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('Link harus berupa URL Telegram https://t.me/...')
+    await (await get_pool()).execute("UPDATE vip_group_packages SET name=$1,price=$2,link_url=$3,description=$4 WHERE code=$5",parts[0][:100],price,link,desc[:500],code)
+    await state.clear()
+    await m.answer('✅ Paket VIP Group diperbarui.',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💎 Kelola VIP Group',callback_data='adm:vipgpackages')]]))
+
+
+@router.callback_query(F.data.startswith('admgpkg:delete:'))
+async def admin_vipg_package_delete(c):
+    if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+    code=c.data.rsplit(':',1)[1]
+    await (await get_pool()).execute("DELETE FROM vip_group_packages WHERE code=$1",code)
+    await c.answer('Paket VIP Group dihapus.')
+    await admin_vipg_packages(c)
+
+
 @router.callback_query(F.data == 'adm:transactions')
 async def admin_transactions(c):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
@@ -1417,7 +1517,7 @@ async def admin_servers(c: CallbackQuery):
         ])
     buttons.append([InlineKeyboardButton(text="➕ Tambah/aktifkan slot server",callback_data="admserver:add")])
     buttons.append([InlineKeyboardButton(text="🔙 Kembali",callback_data="admin_home")])
-    await c.message.edit_text("🗂 <b>SERVER CATEGORIES</b>\\nEdit nama, nonaktifkan, atau aktifkan kembali server 1–10.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.message.edit_text("🗂 <b>SERVER CATEGORIES</b>\nEdit nama, nonaktifkan, atau aktifkan kembali server 1–10.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     await c.answer()
 
 @router.callback_query(F.data.startswith('admserver:edit:'))
@@ -1484,5 +1584,5 @@ async def admin_home_callback(c: CallbackQuery):
         pending=await p.fetchval("SELECT COUNT(*) FROM manual_payments WHERE status='pending'")
     except Exception:
         users=codes=pending=0
-    await c.message.edit_text(f"👑 <b>ADMIN PANEL</b>\\n\\n👥 Users: <b>{users}</b>\\n🔑 Active Code: <b>{codes}</b>\\n🧾 Manual Pending: <b>{pending}</b>",parse_mode="HTML",reply_markup=kb())
+    await c.message.edit_text(f"👑 <b>ADMIN PANEL</b>\n\n👥 Users: <b>{users}</b>\n🔑 Active Code: <b>{codes}</b>\n🧾 Manual Pending: <b>{pending}</b>",parse_mode="HTML",reply_markup=kb())
     await c.answer()
