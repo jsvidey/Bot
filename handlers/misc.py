@@ -203,22 +203,26 @@ async def serverbrowse(c):
     if not server:
         return await c.answer("Server belum tersedia.",show_alert=True)
     full_name=f"Server {no} — {server['name']}"
-    rows=await p.fetch("SELECT code,title,price_idr FROM files WHERE active=TRUE AND server_name=$1 ORDER BY id DESC LIMIT 10 OFFSET $2",full_name,page*10)
+    rows=await p.fetch("""SELECT code,title,price_idr,views,likes,hates,favorites
+        FROM files WHERE active=TRUE AND server_name=$1 ORDER BY id DESC LIMIT 10 OFFSET $2""",full_name,page*10)
     total=int(await p.fetchval("SELECT COUNT(*) FROM files WHERE active=TRUE AND server_name=$1",full_name) or 0)
     buttons=[]
-    for r in rows:
-        price=int(r['price_idr'] or 0)
-        price_text='FREE' if not price else 'Rp'+format(price,',').replace(',','.')
-        buttons.append([InlineKeyboardButton(text=f"📝 {(r['title'] or 'Untitled')[:40]} • {price_text}",callback_data=f"browsecode:{r['code']}")])
     nav=[]
     if page>0: nav.append(InlineKeyboardButton(text="⬅️",callback_data=f"serverbrowse:{no}:{page-1}"))
     nav.append(InlineKeyboardButton(text=f"📄 {page+1}/{max(1,(total+9)//10)}",callback_data="noop"))
     if (page+1)*10<total: nav.append(InlineKeyboardButton(text="➡️",callback_data=f"serverbrowse:{no}:{page+1}"))
     buttons.append(nav)
     buttons.append([InlineKeyboardButton(text="🔙 Pilih Server",callback_data="code_all")])
+    lang=await _lang(c.from_user.id)
     text=f"🗂 <b>SERVER {no} • {html.escape(server['name'])}</b>\n\n"
-    text += "\n".join(f"• {html.escape(r['title'] or 'Untitled')}" for r in rows) if rows else "Belum ada code di server ini."
-    await c.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    if rows:
+        for i,r in enumerate(rows,page*10+1):
+            text += await _code_text_row(r, f"{i}. ")
+        text += ("Klik judul Code untuk membuka review gratis dan tombol pembelian." if lang=='id' else
+                 "Tap a Code title to open its free review and purchase buttons.")
+    else:
+        text += "Belum ada code di server ini." if lang=='id' else "No codes in this server yet."
+    await c.message.edit_text(text,parse_mode='HTML',disable_web_page_preview=True,reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @router.callback_query(F.data.startswith('codepage:'))
 async def codepage(c):
