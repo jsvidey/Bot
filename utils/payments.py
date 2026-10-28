@@ -1,4 +1,4 @@
-import uuid,base64,binascii,json,logging,html
+import uuid,base64,binascii,json,logging,html,time
 from io import BytesIO
 from decimal import Decimal
 from datetime import datetime, timezone
@@ -323,24 +323,26 @@ async def finalize_purchase(invoice,status_amount=None):
             if typ in ("points", "stars"):
                 raise ValueError("Legacy point/star purchases are disabled")
             elif typ=="vip":
-                days=int(qty)
-                package_codes=[str(x) for x in (meta.get("vip_package_codes") or []) if str(x).strip()]
-                package=None
-                if package_codes and not meta.get("vip_group_package_codes"):
-                    package=await c.fetchrow(
-                        "SELECT tier,daily_limit,duration_days FROM vip_packages WHERE code=$1",
-                        package_codes[0],
-                    )
-                tier=str(package["tier"] or "vip") if package else "vip"
-                daily_limit=int(package["daily_limit"] or 0) if package else 0
-                if daily_limit<=0:
-                    daily_limit={1:2,3:4,4:3,5:6,7:4,10:10,15:5,30:30}.get(days,max(2,days))
-                await c.execute("""
-                    UPDATE users SET vip=TRUE,
-                    vip_until=GREATEST(COALESCE(vip_until,NOW()),NOW())+($1||' days')::interval,
-                    vip_plan_days=$1,vip_daily_limit=$2,vip_tier=$3
-                    WHERE user_id=$4
-                """,days,daily_limit,tier,db_uid)
+                # VIP Group purchases grant group access only; VIP Bot purchases grant bot subscription.
+                if not meta.get("vip_group_package_codes"):
+                    days=int(qty)
+                    package_codes=[str(x) for x in (meta.get("vip_package_codes") or []) if str(x).strip()]
+                    package=None
+                    if package_codes:
+                        package=await c.fetchrow(
+                            "SELECT tier,daily_limit,duration_days FROM vip_packages WHERE code=$1",
+                            package_codes[0],
+                        )
+                    tier=str(package["tier"] or "vip") if package else "vip"
+                    daily_limit=int(package["daily_limit"] or 0) if package else 0
+                    if daily_limit<=0:
+                        daily_limit={1:2,3:4,4:3,5:6,7:4,10:10,15:5,30:30}.get(days,max(2,days))
+                    await c.execute("""
+                        UPDATE users SET vip=TRUE,
+                        vip_until=GREATEST(COALESCE(vip_until,NOW()),NOW())+($1||' days')::interval,
+                        vip_plan_days=$1,vip_daily_limit=$2,vip_tier=$3
+                        WHERE user_id=$4
+                    """,days,daily_limit,tier,db_uid)
             elif typ=="file":
                 code=str(meta.get("code") or "")
                 price=int(file_row["price_idr"] or expected)
@@ -378,24 +380,99 @@ async def finalize_purchase(invoice,status_amount=None):
             package_codes = [str(x) for x in (meta.get("vip_group_package_codes") if is_group_vip else meta.get("vip_package_codes") or []) if str(x).strip()]
             package_rows = []
             if package_codes:
-                table = "vip_group_packages" if is_group_vip else "vip_packages"
-                package_rows = await (await get_pool()).fetch(
-                    f"SELECT code,name,link_url FROM {table} WHERE code=ANY($1::text[]) ORDER BY price DESC", package_codes
-                )
-            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-            link_buttons = []
-            lines = (["💎 <b>Pembayaran VIP Group berhasil!</b>", "Link akses grup dikirimkan di bawah ini.", ""] if is_group_vip else ["💎 <b>Pembayaran VIP berhasil!</b>", f"Durasi akses bot: <b>{int(qty)} hari</b>.", ""])
-            for package in package_rows:
-                lines.append(f"📦 {html.escape(str(package['name']))}")
-                link = str(package['link_url'] or '').strip()
-                if link.startswith(('https://t.me/', 'https://telegram.me/')):
-                    link_buttons.append([InlineKeyboardButton(text=f"🔗 Buka {str(package['name'])[:45]}", url=link)])
+                if is_group_vip:
+                    package_rows = await (await get_pool()).fetch(
+                        "SELECT code,name,link_url,chat_id,success_message,description FROM vip_group_packages WHERE code=ANY($1::text[]) ORDER BY price DESC",
+                        package_codes,
+                    )
                 else:
-                    lines.append("⚠️ Link paket belum dipasang admin. Silakan hubungi admin.")
-            if not package_rows:
-                lines.append("Pembelian sudah aktif. Silakan buka menu VIP untuk detail paket.")
-            await bot.send_message(uid, "\n".join(lines), parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=link_buttons) if link_buttons else None)
+                    package_rows = await (await get_pool()).fetch(
+                        "SELECT code,name,link_url FROM vip_packages WHERE code=ANY($1::text[]) ORDER BY price DESC",
+                        package_codes,
+                    )
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            if is_group_vip:
+                await bot.send_message(
+                    uid,
+                    "💎 <b>Pembayaran VIP Group berhasil!</b>\nLink undangan grup dikirim terpisah di bawah. Setelah berhasil bergabung, pesan link akan dihapus otomatis.",
+                    parse_mode="HTML",
+                )
+                for package in package_rows:
+                    name = str(package["name"] or "VIP Group")
+                    link = str(package["link_url"] or "").strip()
+                    chat_id = package["chat_id"]
+                    success_text = str(package.get("success_message") or "✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.")
+                    invite_url = None
+                    if chat_id:
+                        try:
+                            # If the user is already a member, report success without issuing another invite.
+                            member = await bot.get_chat_member(int(chat_id), int(uid))
+                            if str(getattr(member, "status", "")) in {"member", "administrator", "creator"}:
+                                notice = success_text.replace("{group}", name).replace("{user}", str(uid))
+                                await bot.send_message(uid, notice)
+                                continue
+                        except Exception:
+                            # A membership lookup can fail for users not in the group; proceed to invite creation.
+                            pass
+                        try:
+                            invite = await bot.create_chat_invite_link(
+                                chat_id=int(chat_id),
+                                member_limit=1,
+                                expire_date=int(time.time()) + 7 * 24 * 60 * 60,
+                                name=f"VIP {uid}"[:32],
+                            )
+                            invite_url = str(invite.invite_link)
+                        except Exception:
+                            log.exception("Could not create a tracked VIP Group invite: user=%s package=%s chat=%s", uid, package["code"], chat_id)
+                    if not invite_url and link.startswith(("https://t.me/", "https://telegram.me/")):
+                        # Static links still work, but Telegram cannot reliably identify which user joined from them.
+                        invite_url = link
+                    if invite_url:
+                        msg = await bot.send_message(
+                            uid,
+                            f"📦 <b>{html.escape(name)}</b>\nSilakan bergabung melalui tautan berikut. Pesan ini akan dihapus setelah bot mendeteksi kamu bergabung.",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text=f"🔗 Gabung {name[:35]}", url=invite_url)]
+                            ]),
+                        )
+                        if chat_id and invite_url != link:
+                            await (await get_pool()).execute("""
+                                INSERT INTO vip_group_invites(
+                                    invite_link,telegram_user_id,chat_id,package_code,package_name,
+                                    link_chat_id,link_message_id,success_message
+                                ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+                                ON CONFLICT(invite_link) DO UPDATE SET
+                                  telegram_user_id=EXCLUDED.telegram_user_id,
+                                  chat_id=EXCLUDED.chat_id,
+                                  package_code=EXCLUDED.package_code,
+                                  package_name=EXCLUDED.package_name,
+                                  link_chat_id=EXCLUDED.link_chat_id,
+                                  link_message_id=EXCLUDED.link_message_id,
+                                  success_message=EXCLUDED.success_message,
+                                  joined_at=NULL
+                            """, invite_url, int(uid), int(chat_id), str(package.get("code") or ""),
+                                name, int(msg.chat.id), int(msg.message_id), success_text)
+                    else:
+                        await bot.send_message(
+                            uid,
+                            f"⚠️ Pembayaran paket <b>{html.escape(name)}</b> berhasil, tetapi link undangan belum tersedia. Admin perlu mengatur Chat ID grup dan/atau link Telegram di panel admin.",
+                            parse_mode="HTML",
+                        )
+            else:
+                lines = ["💎 <b>Pembayaran VIP berhasil!</b>", f"Durasi akses bot: <b>{int(qty)} hari</b>.", ""]
+                link_buttons = []
+                for package in package_rows:
+                    lines.append(f"📦 {html.escape(str(package['name']))}")
+                    link = str(package['link_url'] or '').strip()
+                    if link.startswith(('https://t.me/', 'https://telegram.me/')):
+                        link_buttons.append([InlineKeyboardButton(text=f"🔗 Buka {str(package['name'])[:45]}", url=link)])
+                    else:
+                        lines.append("⚠️ Link paket belum dipasang admin. Silakan hubungi admin.")
+                if not package_rows:
+                    lines.append("Pembelian sudah aktif. Silakan buka menu VIP untuk detail paket.")
+                await bot.send_message(uid, "\n".join(lines), parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=link_buttons) if link_buttons else None)
 
         else:
             await bot.send_message(uid,'✅ Payment completed successfully.')
