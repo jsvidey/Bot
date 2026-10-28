@@ -18,6 +18,7 @@ async def lifespan(app):
  try:
   await bot.set_my_commands([
    BotCommand(command="start", description="Mulai / Start bot"),
+   BotCommand(command="upload", description="Upload media (admin)"),
    BotCommand(command="vipbot", description="Paket VIP Bot / VIP Bot packages"),
    BotCommand(command="vip", description="Pilih akses VIP / Choose VIP access"),
    BotCommand(command="group", description="Link grup dan channel / Group and channel links"),
@@ -29,6 +30,7 @@ async def lifespan(app):
   ])
   await bot.set_my_commands([
    BotCommand(command="start", description="Start the bot"),
+   BotCommand(command="upload", description="Upload media (admin)"),
    BotCommand(command="vipbot", description="VIP Bot packages"),
    BotCommand(command="vip", description="Choose VIP access"),
    BotCommand(command="group", description="Group and channel links"),
