@@ -548,8 +548,18 @@ async def vip_group_menu(m: Message):
 
 @router.message(F.chat.type=='private', F.text, ~F.text.startswith('/'))
 async def keyword_help(m: Message):
-    text=(m.text or '').strip().lower()
+    raw_text=(m.text or '').strip()
+    text=raw_text.lower()
     lang=await _lang(m.from_user.id)
+
+    # Save Successful notifications may contain both a media code and a review code.
+    # Resolve the media code directly so the bot shows its review card, not the full code list.
+    code_matches=re.findall(r'(?<![A-Za-z0-9_])JSShow_[A-Za-z0-9]{8,40}(?![A-Za-z0-9_])', raw_text, re.IGNORECASE)
+    review_matches=re.findall(r'(?<![A-Za-z0-9_])JSShowreview_[A-Za-z0-9]{6,40}(?![A-Za-z0-9_])', raw_text, re.IGNORECASE)
+    if code_matches or review_matches:
+        from handlers.getfile import show
+        # Prefer the actual media code when a save notification contains both codes.
+        return await show(m, code_matches[0] if code_matches else review_matches[0])
 
     # Help/how-to requests take priority over other keywords.
     if any(k in text for k in ("caranya", "bantuan", "cara", "how to", "help", "how does")):

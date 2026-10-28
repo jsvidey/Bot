@@ -123,7 +123,7 @@ async def show(m,code):
     paid=f"💰 Harga: <b>{fmt(price)}</b>" if price else "🆓 FREE CODE"
     lang=await _lang(m.from_user.id)
     review_code = str(f['review_code'] or '')
-    if review_code and str(code).lower()==review_code.lower():
+    if review_code and str(code).lower() in {review_code.lower(), canonical.lower()}:
         # Review is intentionally free. Show one review/preview item plus a clear
         # notification and inline actions; never send the complete paid media here.
         kb=InlineKeyboardMarkup(inline_keyboard=[
