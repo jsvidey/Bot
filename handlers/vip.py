@@ -1,6 +1,6 @@
 import html
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, LabeledPrice, PreCheckoutQuery
+from aiogram.types import CallbackQuery, Message, ChatMemberUpdated, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile, LabeledPrice, PreCheckoutQuery
 from database import get_pool
 from utils.payments import create_purchase, qr_bytes, enabled
 from utils.callback_loading import loading
@@ -734,3 +734,48 @@ async def vip_manual(c, state):
 async def vip_access_menu(m: Message):
     from handlers.misc import vipbot_menu
     await vipbot_menu(m)
+
+
+@router.chat_member()
+async def vip_group_member_joined(event: ChatMemberUpdated):
+    """Detect a successful join from a tracked, one-person VIP Group invite."""
+    new_status = str(getattr(event.new_chat_member, "status", ""))
+    old_status = str(getattr(event.old_chat_member, "status", ""))
+    joined_statuses = {"member", "administrator", "creator"}
+    if new_status not in joined_statuses or old_status in joined_statuses:
+        return
+    invite_obj = getattr(event, "invite_link", None)
+    invite_url = str(getattr(invite_obj, "invite_link", "") or "").strip()
+    if not invite_url:
+        return
+    try:
+        p = await get_pool()
+        row = await p.fetchrow(
+            """UPDATE vip_group_invites SET joined_at=NOW()
+               WHERE invite_link=$1 AND chat_id=$2 AND joined_at IS NULL
+               RETURNING telegram_user_id,link_chat_id,link_message_id,success_message,package_name""",
+            invite_url, int(event.chat.id),
+        )
+        if not row:
+            return
+        from bot import bot
+        try:
+            await bot.delete_message(int(row["link_chat_id"]), int(row["link_message_id"]))
+        except Exception:
+            # The message may have been deleted by the user or Telegram may reject deletion.
+            pass
+        try:
+            await bot.revoke_chat_invite_link(int(event.chat.id), invite_url)
+        except Exception:
+            pass
+        member_name = str(getattr(event.new_chat_member.user, "full_name", "") or row["telegram_user_id"])
+        notice = str(row["success_message"] or "✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.")
+        notice = notice.replace("{group}", str(row["package_name"] or "VIP Group")).replace("{user}", member_name)
+        try:
+            await bot.send_message(int(row["telegram_user_id"]), notice)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Failed to send VIP Group join confirmation to user %s", row["telegram_user_id"])
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("VIP Group join tracking failed")

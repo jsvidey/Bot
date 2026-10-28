@@ -1371,16 +1371,37 @@ async def admin_package_delete(c):
     await admin_packages(c)
 
 
+@router.message(Command("setvipgroup"))
+async def admin_set_vip_group_from_chat(m: Message):
+    """Let an admin register the current Telegram group for one VIP package."""
+    if not await admin_access(m.from_user.id):
+        return
+    parts=(m.text or "").split(maxsplit=1)
+    if len(parts)<2 or not parts[1].strip():
+        return await m.answer("Format: /setvipgroup CODE_PAKET\\nKirim perintah ini di dalam grup Telegram yang sesuai. Bot harus menjadi admin grup.")
+    code=parts[1].strip()
+    p=await get_pool()
+    row=await p.fetchrow("UPDATE vip_group_packages SET chat_id=$1 WHERE code=$2 RETURNING name",int(m.chat.id),code)
+    if not row:
+        return await m.answer(f"Paket <code>{html.escape(code)}</code> tidak ditemukan. Buat paket dulu di panel admin.",parse_mode="HTML")
+    await m.answer(
+        f"✅ Grup <b>{html.escape(str(row['name']))}</b> berhasil dihubungkan.\\n"
+        f"Chat ID: <code>{m.chat.id}</code>\\n"
+        "Pastikan bot menjadi admin dan memiliki izin mengundang anggota. Pembeli berikutnya akan menerima link khusus yang bisa dideteksi; pesan link akan dihapus setelah bergabung.",
+        parse_mode="HTML",
+    )
+
+
 @router.callback_query(F.data == 'adm:vipgpackages')
 async def admin_vipg_packages(c):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
     p=await get_pool()
-    rows=await p.fetch("SELECT code,name,price,active,link_url,description FROM vip_group_packages ORDER BY price,name")
-    lines=['💎 <b>SETTING VIP GROUP (/vip)</b>','Atur nama, harga, status, deskripsi, dan link undangan paket VIP Group.']
+    rows=await p.fetch("SELECT code,name,price,active,link_url,description,chat_id,success_message FROM vip_group_packages ORDER BY price,name")
+    lines=['💎 <b>SETTING VIP GROUP (/vip)</b>','Atur nama, harga, deskripsi, Chat ID grup, dan notifikasi sukses. Di grup, admin bisa kirim /setvipgroup CODE_PAKET untuk menghubungkan grup.']
     buttons=[]
     for r in rows:
         state='ON' if r['active'] else 'OFF'
-        lines.append(f"\n• <code>{html.escape(str(r['code']))}</code> — {html.escape(str(r['name']))} — Rp{int(r['price']):,} — {state}\n  Link: {html.escape(str(r['link_url'] or 'BELUM DIISI'))}".replace(',','.'))
+        lines.append(f"\n• <code>{html.escape(str(r['code']))}</code> — {html.escape(str(r['name']))} — Rp{int(r['price']):,} — {state}\n  Link fallback: {html.escape(str(r['link_url'] or '-'))}\n  Chat ID grup: <code>{html.escape(str(r['chat_id'] or 'BELUM DIISI'))}</code>\n  Notifikasi: {html.escape(str(r['success_message'] or ''))}".replace(',','.'))
         buttons.append([
             InlineKeyboardButton(text=f"✏️ {str(r['name'])[:24]}",callback_data=f"admgpkg:edit:{r['code']}"),
             InlineKeyboardButton(text='Matikan' if r['active'] else 'Aktifkan',callback_data=f"admgpkg:toggle:{r['code']}"),
@@ -1395,7 +1416,7 @@ async def admin_vipg_packages(c):
 async def admin_vipg_package_add_start(c,state: FSMContext):
     if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
     await state.set_state(AdminState.vipg_package_add)
-    await c.message.answer('Kirim format:\n<code>code | Nama paket | harga | link Telegram | deskripsi</code>\nContoh:\n<code>vip_baru | VIP BARU | 50000 | https://t.me/+invite | Akses grup VIP</code>\nLink dan deskripsi boleh ditulis - jika belum ada.',parse_mode='HTML')
+    await c.message.answer('Kirim format:\n<code>code | Nama paket | harga | link fallback | deskripsi | Chat ID grup | notifikasi berhasil</code>\nContoh:\n<code>vip_baru | VIP BARU | 50000 | - | Akses grup VIP | -1001234567890 | Berhasil masuk grup {group}, {user}!</code>\nChat ID boleh - jika belum diatur. Untuk deteksi otomatis dan hapus pesan link, isi Chat ID grup dan jadikan bot admin dengan izin undang anggota.',parse_mode='HTML')
     await c.answer()
 
 
@@ -1403,17 +1424,22 @@ async def admin_vipg_package_add_start(c,state: FSMContext):
 async def admin_vipg_package_add_save(m: Message,state: FSMContext):
     if not await admin_access(m.from_user.id): await state.clear(); return
     parts=[x.strip() for x in (m.text or '').split('|')]
-    if len(parts) not in (3,4,5): return await m.answer('Format: code | nama | harga | link Telegram (opsional) | deskripsi (opsional)')
+    if len(parts) not in (3,4,5,6,7): return await m.answer('Format: code | nama | harga | link fallback | deskripsi | Chat ID grup | notifikasi berhasil (opsional)')
     code,name=parts[0],parts[1]
     try: price=int(parts[2])
     except ValueError: return await m.answer('Harga harus angka.')
     link=parts[3] if len(parts)>=4 and parts[3]!='-' else ''
     desc=parts[4] if len(parts)>=5 and parts[4]!='-' else 'Dapatkan akses instan ke konten premium dan eksklusif setelah pembayaran berhasil.'
+    chat_id=None
+    if len(parts)>=6 and parts[5]!='-':
+        try: chat_id=int(parts[5])
+        except ValueError: return await m.answer('Chat ID grup harus angka negatif/positif, atau - jika belum diatur.')
+    success_message=parts[6] if len(parts)>=7 and parts[6]!='-' else '✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.'
     if not re.fullmatch(r'[A-Za-z0-9_-]{2,32}',code): return await m.answer('Code hanya boleh huruf, angka, _ dan - (2–32 karakter).')
     if not name or not 1000<=price<=10000000: return await m.answer('Nama wajib dan harga Rp1.000–10.000.000.')
     if link and not link.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('Link harus berupa URL Telegram https://t.me/...')
     try:
-        await (await get_pool()).execute("INSERT INTO vip_group_packages(code,name,price,active,link_url,description) VALUES($1,$2,$3,TRUE,$4,$5)",code,name[:100],price,link,desc[:500])
+        await (await get_pool()).execute("INSERT INTO vip_group_packages(code,name,price,active,link_url,description,chat_id,success_message) VALUES($1,$2,$3,TRUE,$4,$5,$6,$7)",code,name[:100],price,link,desc[:500],chat_id,success_message[:500])
     except Exception:
         return await m.answer('Code paket sudah digunakan atau gagal disimpan.')
     await state.clear()
@@ -1438,7 +1464,7 @@ async def admin_vipg_package_edit(c,state: FSMContext):
     await state.set_state(AdminState.vipg_package_edit)
     await state.update_data(vipg_package_code=code)
     await c.message.answer(
-        f"Edit paket <code>{html.escape(code)}</code>\nSaat ini: {html.escape(str(r['name']))} | {int(r['price'])} | {html.escape(str(r['link_url'] or '-'))} | {html.escape(str(r['description'] or '-'))}\n\nKirim:\n<code>Nama paket | harga | link Telegram | deskripsi</code>\nGunakan - untuk mengosongkan link.",
+        f"Edit paket <code>{html.escape(code)}</code>\nSaat ini: {html.escape(str(r['name']))} | {int(r['price'])} | {html.escape(str(r['link_url'] or '-'))} | {html.escape(str(r['description'] or '-'))} | {html.escape(str(r['chat_id'] or '-'))} | {html.escape(str(r['success_message'] or '-'))}\n\nKirim:\n<code>Nama paket | harga | link fallback | deskripsi | Chat ID grup | notifikasi berhasil</code>\nGunakan - untuk Chat ID yang kosong. Link fallback dipakai bila undangan otomatis gagal.",
         parse_mode='HTML')
     await c.answer()
 
@@ -1448,14 +1474,23 @@ async def admin_vipg_package_edit_save(m: Message,state: FSMContext):
     if not await admin_access(m.from_user.id): await state.clear(); return
     d=await state.get_data(); code=str(d.get('vipg_package_code') or '')
     parts=[x.strip() for x in (m.text or '').split('|')]
-    if len(parts)!=4: return await m.answer('Format: Nama paket | harga | link Telegram | deskripsi')
+    if len(parts) not in (4,6): return await m.answer('Format: Nama paket | harga | link fallback | deskripsi | Chat ID grup | notifikasi berhasil (dua bagian terakhir opsional)')
     try: price=int(parts[1])
     except ValueError: return await m.answer('Harga harus angka.')
     link='' if parts[2]=='-' else parts[2]
     desc='' if parts[3]=='-' else parts[3]
+    old=await (await get_pool()).fetchrow("SELECT chat_id,success_message FROM vip_group_packages WHERE code=$1",code)
+    chat_id=old['chat_id'] if old else None
+    success_message=str(old['success_message'] or '✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.') if old else '✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.'
+    if len(parts)==6:
+        if parts[4]=='-': chat_id=None
+        else:
+            try: chat_id=int(parts[4])
+            except ValueError: return await m.answer('Chat ID grup harus angka atau -.')
+        success_message=parts[5] if parts[5]!='-' else '✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.'
     if not parts[0] or not 1000<=price<=10000000: return await m.answer('Nama wajib dan harga Rp1.000–10.000.000.')
-    if link and not link.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('Link harus berupa URL Telegram https://t.me/...')
-    await (await get_pool()).execute("UPDATE vip_group_packages SET name=$1,price=$2,link_url=$3,description=$4 WHERE code=$5",parts[0][:100],price,link,desc[:500],code)
+    if link and not link.startswith(('https://t.me/','https://telegram.me/')): return await m.answer('Link fallback harus URL Telegram https://t.me/...')
+    await (await get_pool()).execute("UPDATE vip_group_packages SET name=$1,price=$2,link_url=$3,description=$4,chat_id=$5,success_message=$6 WHERE code=$7",parts[0][:100],price,link,desc[:500],chat_id,success_message[:500],code)
     await state.clear()
     await m.answer('✅ Paket VIP Group diperbarui.',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='💎 Kelola VIP Group',callback_data='adm:vipgpackages')]]))
 
