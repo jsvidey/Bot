@@ -114,6 +114,22 @@ async def init_db():
       description TEXT NOT NULL DEFAULT 'Dapatkan akses instan ke konten premium dan eksklusif setelah pembayaran berhasil.',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    ALTER TABLE vip_group_packages ADD COLUMN IF NOT EXISTS chat_id BIGINT;
+    ALTER TABLE vip_group_packages ADD COLUMN IF NOT EXISTS success_message TEXT NOT NULL DEFAULT '✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.';
+    CREATE TABLE IF NOT EXISTS vip_group_invites(
+      invite_link TEXT PRIMARY KEY,
+      telegram_user_id BIGINT NOT NULL,
+      chat_id BIGINT NOT NULL,
+      package_code TEXT NOT NULL DEFAULT '',
+      package_name TEXT NOT NULL DEFAULT 'VIP Group',
+      link_chat_id BIGINT NOT NULL,
+      link_message_id BIGINT NOT NULL,
+      success_message TEXT NOT NULL DEFAULT '✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      joined_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_vip_group_invites_user ON vip_group_invites(telegram_user_id);
+    CREATE INDEX IF NOT EXISTS idx_vip_group_invites_chat ON vip_group_invites(chat_id);
     -- Migrate the three group packages that older versions stored in vip_packages.
     INSERT INTO vip_group_packages(code,name,price,active,link_url)
       SELECT code,

@@ -224,3 +224,31 @@ CREATE INDEX IF NOT EXISTS idx_users_language ON users(language);
 UPDATE settings SET value='2000' WHERE key='media_send_delay_ms' AND value='3000';
 
 COMMIT;
+
+
+-- VIP Group automatic join tracking and per-package join notifications.
+CREATE TABLE IF NOT EXISTS vip_group_packages(
+  code TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  price BIGINT NOT NULL CHECK(price >= 1000),
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  link_url TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT 'Dapatkan akses instan ke konten premium dan eksklusif setelah pembayaran berhasil.',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+ALTER TABLE vip_group_packages ADD COLUMN IF NOT EXISTS chat_id BIGINT;
+ALTER TABLE vip_group_packages ADD COLUMN IF NOT EXISTS success_message TEXT NOT NULL DEFAULT '✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.';
+CREATE TABLE IF NOT EXISTS vip_group_invites(
+  invite_link TEXT PRIMARY KEY,
+  telegram_user_id BIGINT NOT NULL,
+  chat_id BIGINT NOT NULL,
+  package_code TEXT NOT NULL DEFAULT '',
+  package_name TEXT NOT NULL DEFAULT 'VIP Group',
+  link_chat_id BIGINT NOT NULL,
+  link_message_id BIGINT NOT NULL,
+  success_message TEXT NOT NULL DEFAULT '✅ Berhasil masuk grup {group}! Terima kasih telah bergabung.',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  joined_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_vip_group_invites_user ON vip_group_invites(telegram_user_id);
+CREATE INDEX IF NOT EXISTS idx_vip_group_invites_chat ON vip_group_invites(chat_id);
