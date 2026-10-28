@@ -16,6 +16,7 @@ router=Router()
 _LOCKS={}
 class U(StatesGroup):
     media=State(); title=State(); tags=State(); price=State(); server=State(); access=State(); auto_delete=State(); forward=State(); watermark=State(); preview=State()
+    panel_title=State(); panel_tags=State(); panel_price=State(); panel_preview=State()
 
 def rnd(n=14): return ''.join(secrets.choice('123456789XxYy') for _ in range(n))
 
@@ -358,8 +359,16 @@ async def finish(c,state):
     d=await state.get_data(); media=d.get('media',[])
     lang = d.get('lang') or await _lang(c.from_user.id)
     if not media:return await c.answer(_t(lang, "no_media"),show_alert=True)
-    await state.set_state(U.title)
-    await c.message.edit_text(_t(lang, "title_prompt", n=len(media)),parse_mode='HTML')
+    p=await get_pool()
+    default_wm = str(await p.fetchval("SELECT value FROM settings WHERE key='default_watermark_enabled'") or 'on').lower() == 'on'
+    await state.update_data(
+        title='', tags=[], price=0,
+        server_name='Server 1 — Media 5th ke bawah', access_mode='all',
+        auto_delete=False, allow_forward=True, watermark_enabled=default_wm,
+        preview_media=[]
+    )
+    await c.answer()
+    await show_config_panel(c.message, state)
 
 @router.message(U.title)
 async def title(m,state):
@@ -384,6 +393,221 @@ async def tags(m,state):
         _t(lang, "price_prompt", min=f"{PAID_CODE_MIN_IDR:,}".replace(",", "."), max=f"{PAID_CODE_MAX_IDR:,}".replace(",", ".")),
         parse_mode='HTML')
 
+
+def _config_keyboard(d):
+    price = int(d.get('price') or 0)
+    server = html.escape(str(d.get('server_name') or 'Belum dipilih'))
+    access = html.escape(str(d.get('access_mode') or 'all').upper())
+    preview = list(d.get('preview_media') or [])
+    preview_label = f"{len(preview)} item" if preview else "Belum ada"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📝 Judul: {(str(d.get('title') or 'Belum diisi'))[:28]}", callback_data='upcfg:title')],
+        [InlineKeyboardButton(text=f"🏷 Tag: {', '.join(d.get('tags') or [])[:28] or '-'}", callback_data='upcfg:tags')],
+        [InlineKeyboardButton(text=f"💰 Harga: {'GRATIS' if price == 0 else 'Rp'+format(price, ',').replace(',', '.')}", callback_data='upcfg:price')],
+        [InlineKeyboardButton(text=f"🗂 Server: {server[:35]}", callback_data='upcfg:server')],
+        [InlineKeyboardButton(text=f"🔐 Akses: {access}", callback_data='upcfg:access')],
+        [InlineKeyboardButton(text=f"🗑 Auto-delete: {'ON' if d.get('auto_delete') else 'OFF'}", callback_data='upcfg:delete')],
+        [InlineKeyboardButton(text=f"↗️ Izinkan forward: {'YA' if d.get('allow_forward', True) else 'TIDAK'}", callback_data='upcfg:forward')],
+        [InlineKeyboardButton(text=f"💧 Watermark: {'ON' if d.get('watermark_enabled') else 'OFF'}", callback_data='upcfg:watermark')],
+        [InlineKeyboardButton(text=f"🖼 Preview: {preview_label}", callback_data='upcfg:preview')],
+        [InlineKeyboardButton(text='👁 Lihat Preview', callback_data='upcfg:preview_show')],
+        [InlineKeyboardButton(text='✅ SIMPAN & PUBLIKASIKAN', callback_data='upcfg:save')],
+        [InlineKeyboardButton(text='❌ Batalkan Upload', callback_data='up_cancel')],
+    ])
+
+async def show_config_panel(target, state):
+    d = await state.get_data()
+    media = list(d.get('media') or [])
+    if not media:
+        await state.clear()
+        return await target.answer('❌ Media tidak ditemukan. Silakan mulai upload lagi.')
+    price = int(d.get('price') or 0)
+    preview = list(d.get('preview_media') or [])
+    text = (
+        '⚙️ <b>PANEL PENGATURAN CODE</b>\n\n'
+        'Tekan bagian yang ingin diubah. Perubahan belum disimpan sampai tombol SIMPAN ditekan.\n\n'
+        f"📦 Media utama: <b>{len(media)}</b> item\n"
+        f"📝 Judul: <b>{html.escape(str(d.get('title') or 'Belum diisi'))}</b>\n"
+        f"🏷 Tag: <b>{html.escape(', '.join(d.get('tags') or []) or '-')}</b>\n"
+        f"💰 Harga: <b>{'GRATIS' if price == 0 else 'Rp'+format(price, ',').replace(',', '.')}</b>\n"
+        f"🗂 Server: <b>{html.escape(str(d.get('server_name') or 'Belum dipilih'))}</b>\n"
+        f"🔐 Akses: <b>{html.escape(str(d.get('access_mode') or 'all').upper())}</b>\n"
+        f"🖼 Preview gratis: <b>{len(preview)} item</b>"
+    )
+    await state.set_state(None)
+    try:
+        if isinstance(target, CallbackQuery):
+            await target.message.edit_text(text, parse_mode='HTML', reply_markup=_config_keyboard(d))
+        else:
+            await target.answer(text, parse_mode='HTML', reply_markup=_config_keyboard(d))
+    except Exception:
+        await target.answer(text, parse_mode='HTML', reply_markup=_config_keyboard(d))
+
+async def _config_guard(c):
+    if not await admin_access(c.from_user.id):
+        await c.answer('Khusus admin/owner.', show_alert=True)
+        return False
+    return True
+
+@router.callback_query(F.data.startswith('upcfg:'))
+async def config_action(c: CallbackQuery, state: FSMContext):
+    if not await _config_guard(c): return
+    action = c.data.split(':', 1)[1]
+    d = await state.get_data()
+    await c.answer()
+    if action == 'title':
+        await state.set_state(U.panel_title)
+        return await c.message.edit_text('📝 <b>UBAH JUDUL CODE</b>\nKirim judul baru (maksimal 150 karakter).', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
+    if action == 'tags':
+        await state.set_state(U.panel_tags)
+        return await c.message.edit_text('🏷 <b>UBAH TAG</b>\nKirim maksimal 10 tag, atau kirim <code>-</code> untuk menghapus semua tag.', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
+    if action == 'price':
+        await state.set_state(U.panel_price)
+        return await c.message.edit_text(f'💰 <b>UBAH HARGA</b>\nKirim <code>0</code> untuk GRATIS. Harga berbayar Rp{PAID_CODE_MIN_IDR:,}–Rp{PAID_CODE_MAX_IDR:,}.'.replace(',', '.'), parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🆓 Jadikan Gratis', callback_data='upcfgpricefree')],[InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
+    if action == 'server':
+        p = await get_pool()
+        rows = await p.fetch('SELECT server_no,name FROM server_categories WHERE enabled=TRUE ORDER BY server_no')
+        if not rows: rows = [{'server_no': i, 'name': f'Server {i}'} for i in range(1, 11)]
+        buttons = [[InlineKeyboardButton(text=f"🗂 {r['server_no']} — {r['name']}", callback_data=f"upcfgserver:{r['server_no']}")] for r in rows]
+        buttons.append([InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')])
+        return await c.message.edit_text('🗂 <b>PILIH SERVER</b>', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    if action == 'access':
+        return await c.message.edit_text('🔐 <b>PILIH AKSES CODE</b>', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='🌐 ALL', callback_data='upcfgaccess:all'), InlineKeyboardButton(text='🆓 FREE', callback_data='upcfgaccess:free'), InlineKeyboardButton(text='⭐ VIP', callback_data='upcfgaccess:vip')],
+            [InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
+    if action in ('delete','forward','watermark'):
+        key = {'delete':'auto_delete','forward':'allow_forward','watermark':'watermark_enabled'}[action]
+        await state.update_data(**{key: not bool(d.get(key, action == 'forward'))})
+        return await show_config_panel(c, state)
+    if action == 'preview':
+        preview = list(d.get('preview_media') or [])
+        return await c.message.edit_text(f'🖼 <b>PENGATURAN PREVIEW</b>\n\nSaat ini: <b>{len(preview)} item</b>.\nPilih tambah, ganti seluruh preview, atau hapus.', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='➕ Tambah Preview', callback_data='upcfgpreview:add')],
+            [InlineKeyboardButton(text='🔄 Ganti Preview', callback_data='upcfgpreview:replace')],
+            [InlineKeyboardButton(text='🗑 Hapus Semua Preview', callback_data='upcfgpreview:delete')],
+            [InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
+    if action == 'preview_show':
+        preview = list(d.get('preview_media') or [])
+        if not preview:
+            return await c.answer('Belum ada preview.', show_alert=True)
+        try:
+            for item in preview:
+                fid = item.get('telegram_file_id')
+                if item.get('type') == 'video': await c.bot.send_video(c.from_user.id, fid, caption='🖼 Preview gratis')
+                else: await c.bot.send_photo(c.from_user.id, fid, caption='🖼 Preview gratis' if item is preview[0] else None)
+        except Exception as e:
+            await c.message.answer(f'Preview tidak dapat dikirim: {html.escape(str(e)[:200])}')
+        return
+    if action == 'save':
+        if not str(d.get('title') or '').strip():
+            return await c.answer('Judul wajib diisi.', show_alert=True)
+        if not d.get('server_name'):
+            await state.update_data(server_name='Server 1 — Media 5th ke bawah')
+        await create_code(c.message, state, int(d.get('price') or 0), uid=c.from_user.id, username=c.from_user.username, full_name=c.from_user.full_name)
+    elif action == 'back':
+        await show_config_panel(c, state)
+
+@router.callback_query(F.data == 'upcfgpricefree')
+async def config_price_free(c: CallbackQuery, state: FSMContext):
+    if not await _config_guard(c): return
+    await state.update_data(price=0)
+    await c.answer('Harga diubah menjadi GRATIS.')
+    await show_config_panel(c, state)
+
+@router.callback_query(F.data.startswith('upcfgserver:'))
+async def config_server(c: CallbackQuery, state: FSMContext):
+    if not await _config_guard(c): return
+    try: n = int(c.data.split(':', 1)[1])
+    except ValueError: return await c.answer('Server tidak valid.', show_alert=True)
+    p = await get_pool()
+    row = await p.fetchrow('SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE', n)
+    if not row: return await c.answer('Server tidak tersedia.', show_alert=True)
+    await state.update_data(server_name=f"Server {n} — {row['name']}")
+    await c.answer('Server diperbarui.')
+    await show_config_panel(c, state)
+
+@router.callback_query(F.data.startswith('upcfgaccess:'))
+async def config_access(c: CallbackQuery, state: FSMContext):
+    if not await _config_guard(c): return
+    value = c.data.split(':', 1)[1]
+    if value not in {'all','free','vip'}: return await c.answer('Akses tidak valid.', show_alert=True)
+    updates = {'access_mode': value}
+    if value == 'free': updates['price'] = 0
+    await state.update_data(**updates)
+    await c.answer('Akses diperbarui.')
+    await show_config_panel(c, state)
+
+@router.message(U.panel_title)
+async def config_title_message(m: Message, state: FSMContext):
+    if not await admin_access(m.from_user.id): return
+    value = (m.text or '').strip()
+    if not value: return await m.answer('Judul tidak boleh kosong.')
+    await state.update_data(title=value[:150])
+    await show_config_panel(m, state)
+
+@router.message(U.panel_tags)
+async def config_tags_message(m: Message, state: FSMContext):
+    if not await admin_access(m.from_user.id): return
+    raw = (m.text or '').strip()
+    await state.update_data(tags=[] if raw == '-' else clean_tags(raw))
+    await show_config_panel(m, state)
+
+@router.message(U.panel_price)
+async def config_price_message(m: Message, state: FSMContext):
+    if not await admin_access(m.from_user.id): return
+    try: price = int(re.sub(r'\D', '', m.text or ''))
+    except Exception: price = -1
+    if price < 0: return await m.answer('Harga tidak valid. Kirim angka, misalnya 15000.')
+    if price and (price < PAID_CODE_MIN_IDR or price > PAID_CODE_MAX_IDR):
+        return await m.answer(f'Harga harus Rp{PAID_CODE_MIN_IDR:,} sampai Rp{PAID_CODE_MAX_IDR:,}.'.replace(',', '.'))
+    await state.update_data(price=price)
+    await show_config_panel(m, state)
+
+@router.callback_query(F.data.startswith('upcfgpreview:'))
+async def config_preview_action(c: CallbackQuery, state: FSMContext):
+    if not await _config_guard(c): return
+    action = c.data.split(':', 1)[1]
+    d = await state.get_data()
+    if action == 'delete':
+        await state.update_data(preview_media=[])
+        await c.answer('Semua preview dihapus.')
+        return await show_config_panel(c, state)
+    if action in {'add','replace'}:
+        await state.update_data(preview_edit_mode=action)
+        if action == 'replace': await state.update_data(preview_media=[])
+        await state.set_state(U.panel_preview)
+        await c.answer()
+        return await c.message.edit_text(
+            '🖼 <b>KIRIM PREVIEW</b>\n\nKirim 1 video ATAU maksimal 5 gambar. '
+            'Mode tambah akan mempertahankan preview lama; mode ganti menghapus preview lama terlebih dahulu. '
+            'Tekan Selesai jika sudah selesai.', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='✅ Selesai Preview', callback_data='upcfgpreview:done')],
+                [InlineKeyboardButton(text='↩️ Batal / Kembali', callback_data='upcfg:back')]]))
+    if action == 'done':
+        await state.set_state(None)
+        await c.answer()
+        return await show_config_panel(c, state)
+
+@router.message(U.panel_preview)
+async def config_preview_receive(m: Message, state: FSMContext):
+    if not await admin_access(m.from_user.id): return
+    d = await state.get_data()
+    items = list(d.get('preview_media') or [])
+    if m.video:
+        if items: return await m.answer('Preview hanya boleh 1 video atau maksimal 5 gambar. Hapus preview lama/gunakan mode ganti.')
+        v=m.video
+        items=[{'type':'video','telegram_file_id':v.file_id,'telegram_file_unique_id':v.file_unique_id,'file_name':v.file_name or 'preview.mp4','mime_type':v.mime_type or 'video/mp4','file_size':v.file_size or 0,'storage_status':'telegram_file_id_only'}]
+    elif m.photo:
+        if any(x.get('type') == 'video' for x in items): return await m.answer('Preview sudah berisi video; tidak bisa dicampur gambar.')
+        if len(items) >= 5: return await m.answer('Maksimal 5 gambar preview.')
+        ph=m.photo[-1]
+        items.append({'type':'photo','telegram_file_id':ph.file_id,'telegram_file_unique_id':ph.file_unique_id,'file_name':f'{ph.file_unique_id}.jpg','mime_type':'image/jpeg','file_size':ph.file_size or 0,'storage_status':'telegram_file_id_only'})
+    else:
+        return await m.answer('Kirim 1 video atau maksimal 5 gambar.')
+    await state.update_data(preview_media=items)
+    await m.answer(f'✅ Preview tersimpan sementara: {len(items)} item. Kirim lagi atau tekan Selesai Preview.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text='✅ Selesai Preview', callback_data='upcfgpreview:done')],
+        [InlineKeyboardButton(text='↩️ Kembali ke Panel', callback_data='upcfg:back')]]))
 
 async def create_code(m,state,price:int, uid=None, username=None, full_name=None):
     d=await state.get_data()
@@ -612,9 +836,8 @@ async def preview_done(c,state):
     d=await state.get_data()
     if c.data=='up_preview_skip':
         await state.update_data(preview_media=[])
-        d=await state.get_data()
     await c.answer()
-    await create_code(c.message,state,int(d.get('price') or 0), uid=c.from_user.id, username=c.from_user.username, full_name=c.from_user.full_name)
+    await show_config_panel(c.message, state)
 
 
 @router.callback_query(F.data=='up_cancel')
