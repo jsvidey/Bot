@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio,json,os,secrets,tempfile,html,re
 from aiogram import Router,F
+from aiogram.filters import Command
 from aiogram.types import Message,CallbackQuery,InlineKeyboardMarkup,InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup,State
@@ -129,6 +130,19 @@ def media_kb(lang='id'):
 def clean_tags(s):
     parts=[re.sub(r'[,\n#]+',' ',x).strip() for x in (s or '').split()]
     return [x[:30] for x in parts if x][:10]
+
+@router.message(F.chat.type == "private", Command("upload"))
+async def upload_command(m: Message, state: FSMContext):
+    if not await admin_access(m.from_user.id):
+        return await m.answer("❌ Perintah /upload khusus admin/owner.")
+    await state.clear()
+    await state.set_state(U.media)
+    lang=await _lang(m.from_user.id)
+    await state.update_data(media=[],status_message_id=None,lang=lang)
+    msg=await m.answer(
+        _t(lang,"up_title")+"\\n\\n"+_t(lang,"up_start",max=MAX_MEDIA),
+        parse_mode="HTML",reply_markup=_media_kb(lang))
+    await state.update_data(status_message_id=msg.message_id)
 
 @router.callback_query(F.data=='upfile')
 async def start(c,state):

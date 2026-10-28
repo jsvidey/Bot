@@ -547,52 +547,127 @@ async def vip_group_menu(m: Message):
     await m.answer(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
 @router.message(F.chat.type=='private', F.text, ~F.text.startswith('/'))
-async def keyword_help(m:Message):
+async def keyword_help(m: Message):
     text=(m.text or '').strip().lower()
     lang=await _lang(m.from_user.id)
 
-    if "caranya gimana" in text or "how does it work" in text or "how to open" in text:
+    # Help/how-to requests take priority over other keywords.
+    if any(k in text for k in ("caranya", "bantuan", "cara", "how to", "help", "how does")):
         guide = (
-            "📖 <b>CARA MEMBUKA CODE</b>\n\n"
-            "1. Kirim kode media ke chat bot.\n"
-            "2. Periksa informasi Code yang muncul.\n"
-            "3. Tekan tombol Buka Code.\n"
-            "4. Pilih akses gratis atau metode pembayaran yang tersedia.\n"
-            "5. Ikuti petunjuk sampai media dikirim."
+            "📖 <b>PANDUAN BOT</b>\\n\\n"
+            "📂 <b>Cara membuka media</b>\\n"
+            "1. Kirim Code media atau pilih menu Code.\\n"
+            "2. Pilih Code yang ingin dibuka.\\n"
+            "3. Tekan Buka Code lalu ikuti pilihan akses yang tersedia.\\n\\n"
+            "💎 <b>Cara join VIP Bot</b>\\n"
+            "Tekan VIP Bot, pilih paket, lalu selesaikan pembayaran.\\n\\n"
+            "👥 <b>Cara join VIP Group</b>\\n"
+            "Tekan VIP / VIP Group, pilih paket grup, lalu ikuti instruksi pembayaran.\\n"
+            "Gunakan tombol di bawah untuk membuka menu terkait."
             if lang == "id" else
-            "📖 <b>HOW TO OPEN A CODE</b>\n\n"
-            "1. Send the media code to the bot.\n"
-            "2. Review the Code information.\n"
-            "3. Tap Open Code.\n"
-            "4. Choose free access or an available payment method.\n"
-            "5. Follow the instructions until the media is delivered."
+            "📖 <b>BOT GUIDE</b>\\n\\n"
+            "📂 <b>Open media</b>\\nSend a media Code or choose Code, select an item, tap Open Code, and follow the access steps.\\n\\n"
+            "💎 <b>Join VIP Bot</b>\\nTap VIP Bot, choose a package, and complete payment.\\n\\n"
+            "👥 <b>Join VIP Group</b>\\nTap VIP / VIP Group, choose a group package, and follow payment instructions."
         )
-        return await m.answer(guide, parse_mode="HTML")
+        kb=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔑 Code", callback_data="auto:codes")],
+            [InlineKeyboardButton(text="👑 VIP Bot", callback_data="keyword_vipbot"),
+             InlineKeyboardButton(text="💎 VIP Group", callback_data="keyword_vipgroup")],
+            [InlineKeyboardButton(text="👥 Group", callback_data="auto:group")],
+            [InlineKeyboardButton(text="🏠 /start", callback_data="home")]
+        ])
+        return await m.answer(guide, parse_mode="HTML", reply_markup=kb)
 
     if "vip" in text:
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="👑 VIP Bot", callback_data="keyword_vipbot"),
-            InlineKeyboardButton(text="💎 VIP Group", callback_data="keyword_vipgroup"),
-        ]])
-        notice = "💎 <b>MENU VIP</b>\nPilih jenis VIP yang kamu maksud." if lang == "id" else "💎 <b>VIP MENU</b>\nChoose the type of VIP you need."
-        return await m.answer(notice, parse_mode="HTML", reply_markup=kb)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👑 VIP Bot", callback_data="keyword_vipbot"),
+             InlineKeyboardButton(text="💎 VIP Group", callback_data="keyword_vipgroup")],
+            [InlineKeyboardButton(text="🏠 /start", callback_data="home")]
+        ])
+        return await m.answer("💎 <b>MENU VIP</b>\\nPilih VIP Bot atau VIP Group." if lang=="id" else
+                              "💎 <b>VIP MENU</b>\\nChoose VIP Bot or VIP Group.",
+                              parse_mode="HTML", reply_markup=kb)
 
-    if re.search(r"\\bcode\\b", text):
-        notice = "🔑 <b>MENU CODE</b>\nPilih server untuk mencari Code media." if lang == "id" else "🔑 <b>CODE MENU</b>\nChoose a server to search media Codes."
-        return await m.answer(notice, parse_mode="HTML", reply_markup=await _server_keyboard(m.from_user.id))
+    if "group" in text:
+        return await m.answer(
+            "👥 <b>MENU GROUP</b>\\nPilih grup atau channel yang dibutuhkan." if lang=="id" else
+            "👥 <b>GROUP MENU</b>\\nChoose the group or channel you need.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👥 Group & Channel", callback_data="auto:group")],
+                [InlineKeyboardButton(text="🏠 /start", callback_data="home")]
+            ]))
 
-    if text in {'group','video'}:
-        rows=await quick_links(m.from_user.id)
-        await m.answer(await _t(m.from_user.id,"bot_links"),parse_mode='HTML',
-                       reply_markup=InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text='🏠 Menu',callback_data='home')]]))
-        return
+    if any(k in text for k in ("code", "video", "media")):
+        return await send_code_page(m, 0)
 
-    from utils.admin_access import admin_access
-    if await admin_access(m.from_user.id):
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=await _t(m.from_user.id,'upfile'),callback_data='upfile')]])
-    else:
-        kb = None
-    await m.answer(await _t(m.from_user.id,'media_hint'),parse_mode='HTML',reply_markup=kb)
+    # Unknown text: give a useful fallback instead of a dead-end response.
+    kb=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 /start", callback_data="home"),
+         InlineKeyboardButton(text="🔑 Code", callback_data="auto:codes")],
+        [InlineKeyboardButton(text="👑 VIP Bot", callback_data="keyword_vipbot"),
+         InlineKeyboardButton(text="💎 VIP", callback_data="keyword_vipgroup")],
+        [InlineKeyboardButton(text="👥 Group", callback_data="auto:group"),
+         InlineKeyboardButton(text="❓ Bantuan", callback_data="auto:help")]
+    ])
+    await m.answer(
+        "Maaf, pesan itu belum dikenali. Pilih menu di bawah agar saya bisa membantu." if lang=="id" else
+        "Sorry, I didn't recognize that message. Choose a menu below.",
+        reply_markup=kb
+    )
+
+async def send_code_page(target, page: int = 0):
+    uid=target.from_user.id
+    lang=await _lang(uid)
+    per_page=10
+    p=await get_pool()
+    total=int(await p.fetchval("SELECT COUNT(*) FROM files WHERE active=TRUE") or 0)
+    page=max(0,min(int(page),max(0,(total-1)//per_page)))
+    rows=await p.fetch(
+        "SELECT code,title,media_count,views,price_idr FROM files WHERE active=TRUE ORDER BY id DESC LIMIT $1 OFFSET $2",
+        per_page,page*per_page
+    )
+    if not rows:
+        return await target.answer("Belum ada Code aktif." if lang=="id" else "No active Codes yet.")
+    lines=["🔑 <b>DAFTAR CODE MEDIA</b>" if lang=="id" else "🔑 <b>MEDIA CODE LIST</b>"]
+    buttons=[]
+    for r in rows:
+        title=html.escape(str(r["title"] or "Untitled")[:55])
+        code=html.escape(str(r["code"]))
+        price=int(r["price_idr"] or 0)
+        lines.append(f"• <b>{title}</b> — <code>{code}</code> · {int(r['media_count'] or 0)} media")
+        buttons.append([InlineKeyboardButton(text=f"📂 {str(r['title'] or r['code'])[:45]}", callback_data=f"browsecode:{r['code']}")])
+    lines.append(f"\\nHalaman {page+1}/{max(1,(total+per_page-1)//per_page)} · Total {total} Code" if lang=="id" else
+                 f"\\nPage {page+1}/{max(1,(total+per_page-1)//per_page)} · {total} Codes total")
+    nav=[]
+    if page>0: nav.append(InlineKeyboardButton(text="⬅️ Sebelumnya" if lang=="id" else "⬅️ Previous",callback_data=f"auto:codes:{page-1}"))
+    if (page+1)*per_page<total: nav.append(InlineKeyboardButton(text="Berikutnya ➡️" if lang=="id" else "Next ➡️",callback_data=f"auto:codes:{page+1}"))
+    if nav: buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text="👑 VIP Bot",callback_data="keyword_vipbot"),
+                    InlineKeyboardButton(text="💎 VIP",callback_data="keyword_vipgroup")])
+    await target.answer("\\n".join(lines),parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data.startswith("auto:codes"))
+async def auto_codes_page(c: CallbackQuery):
+    parts=c.data.split(":")
+    page=int(parts[2]) if len(parts)>2 and parts[2].isdigit() else 0
+    await c.answer()
+    await send_code_page(c.message,page)
+
+@router.callback_query(F.data == "auto:group")
+async def auto_group(c: CallbackQuery):
+    rows=await quick_links(c.from_user.id)
+    await c.answer()
+    await c.message.answer(await _t(c.from_user.id,"bot_links"),parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows or [[InlineKeyboardButton(text="🏠 /start",callback_data="home")]]))
+
+@router.callback_query(F.data == "auto:help")
+async def auto_help(c: CallbackQuery):
+    lang=await _lang(c.from_user.id)
+    await c.answer()
+    await c.message.answer("Ketik bantuan/cara untuk melihat panduan membuka media dan bergabung VIP." if lang=="id" else
+                           "Type help/how to for instructions on opening media and joining VIP.")
 
 @router.callback_query(F.data == "keyword_vipbot")
 async def keyword_vipbot(c: CallbackQuery):
@@ -615,11 +690,19 @@ async def keyword_vipgroup(c: CallbackQuery):
 
 async def media_hint(m):
     from utils.admin_access import admin_access
+    lang=await _lang(m.from_user.id)
+    rows=[
+        [InlineKeyboardButton(text="🔑 Code",callback_data="auto:codes"),
+         InlineKeyboardButton(text="👑 VIP Bot",callback_data="keyword_vipbot")],
+        [InlineKeyboardButton(text="💎 VIP Group",callback_data="keyword_vipgroup"),
+         InlineKeyboardButton(text="❓ Bantuan",callback_data="auto:help")]
+    ]
     if await admin_access(m.from_user.id):
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=await _t(m.from_user.id,'upfile'),callback_data='upfile')]])
-    else:
-        kb = None
-    await m.answer(await _t(m.from_user.id,'media_hint'),parse_mode='HTML',reply_markup=kb)
+        rows.insert(0,[InlineKeyboardButton(text="📤 /upload",callback_data="upfile")])
+    await m.answer(
+        "📎 Media diterima. Untuk melihat media yang tersedia, pilih Code. Jika ingin mengunggah media ke bot, gunakan /upload (admin)." if lang=="id" else
+        "📎 Media received. Choose Code to browse available media. Uploading is available to admins with /upload.",
+        parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 @router.message(F.chat.type == 'private', F.photo)
 async def photo_hint(m): await media_hint(m)
