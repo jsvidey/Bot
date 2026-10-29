@@ -56,7 +56,7 @@ async def admin_command(m):
 class AdminState(StatesGroup):
     broadcast=State(); edit_code=State(); edit_title=State(); edit_tags=State(); edit_price=State(); user_action=State(); move=State(); grant_open_user=State(); grant_open_code=State(); role_user=State()
     b2_name=State(); b2_region=State(); b2_bucket=State(); b2_key_id=State(); b2_app_key=State(); vip_channel_value=State()
-    setting_value=State(); package_value=State(); package_add=State(); vipg_package_add=State(); vipg_package_edit=State(); edit_option=State(); welcome_id=State(); welcome_en=State(); server_name=State(); discount_create=State()
+    setting_value=State(); package_value=State(); package_add=State(); vipg_package_add=State(); vipg_package_edit=State(); edit_option=State(); welcome_id=State(); welcome_en=State(); server_name=State(); discount_create=State(); discount_edit=State()
 
 def admin(uid): return is_config_admin(uid)
 async def val(key): return str(await (await get_pool()).fetchval("SELECT value FROM settings WHERE key=$1",key) or "off")
@@ -1672,23 +1672,107 @@ async def admin_home_callback(c: CallbackQuery):
 @router.callback_query(F.data == 'adm:discounts')
 async def admin_discounts(c):
  if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+ text = ('🎟 <b>MENU CODE DISCOUNT</b>\n\n'
+         'Silakan pilih tindakan yang ingin dilakukan.\n\n'
+         '➕ <b>Create Code</b> — membuat kode diskon baru.\n'
+         '🗂 <b>Kelola Code</b> — melihat, mengedit, mengaktifkan, atau menghapus kode yang sudah dibuat.')
+ kb = InlineKeyboardMarkup(inline_keyboard=[
+  [InlineKeyboardButton(text='➕ Create Code', callback_data='adm:discount_create')],
+  [InlineKeyboardButton(text='🗂 Kelola Code', callback_data='adm:discount_manage')],
+  [InlineKeyboardButton(text='🔙 Panel Admin', callback_data='adm:panel')]
+ ])
+ await c.message.edit_text(text,parse_mode='HTML',reply_markup=kb)
+ await c.answer()
+
+@router.callback_query(F.data == 'adm:discount_manage')
+async def admin_discount_manage(c):
+ if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
  p=await get_pool()
- rows=await p.fetch("SELECT id,code,discount_type,discount_value,max_uses,used_count,expires_at,active FROM discount_codes ORDER BY id DESC LIMIT 20")
- text="🎟 <b>CODE DISCOUNT</b>\n\n"
+ rows=await p.fetch("SELECT id,code,discount_type,discount_value,max_uses,used_count,expires_at,active FROM discount_codes ORDER BY id DESC LIMIT 50")
  def _expiry_wib(value):
   try:
    from zoneinfo import ZoneInfo
-   return value.astimezone(ZoneInfo("Asia/Jakarta")).strftime("%d-%m-%Y %H:%M WIB")
-  except Exception:
-   return str(value)
- text += "\n".join(f"#{r['id']} <code>{html.escape(r['code'])}</code> • {r['discount_value']}{'%' if r['discount_type']=='percent' else ' Rp'} • {r['used_count']}/{r['max_uses']} • {'Aktif' if r['active'] else 'Nonaktif'} • sampai {_expiry_wib(r['expires_at'])}" for r in rows) or "Belum ada code discount."
- rows_kb=[]
- for r in rows:
-  rows_kb.append([InlineKeyboardButton(text=f"{'⛔ Nonaktifkan' if r['active'] else '✅ Aktifkan'} #{r['id']} {r['code'][:18]}",callback_data=f"adm:discount_toggle:{r['id']}")])
- rows_kb.extend([
-  [InlineKeyboardButton(text='➕ Buat Code Discount',callback_data='adm:discount_create')],
-  [InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]])
- await c.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=rows_kb))
+   return value.astimezone(ZoneInfo('Asia/Jakarta')).strftime('%d-%m-%Y %H:%M WIB')
+  except Exception: return str(value)
+ text='🗂 <b>KELOLA CODE DISCOUNT</b>\n\n'
+ text += '\n'.join(f"#{r['id']} <code>{html.escape(r['code'])}</code> • {r['discount_value']}{'%' if r['discount_type']=='percent' else ' Rp'} • {r['used_count']}/{r['max_uses']} • {'Aktif' if r['active'] else 'Nonaktif'} • sampai {_expiry_wib(r['expires_at'])}" for r in rows) or 'Belum ada kode discount.'
+ buttons=[[InlineKeyboardButton(text=f"🔎 #{r['id']} {r['code'][:22]}",callback_data=f"adm:discount_detail:{r['id']}")] for r in rows]
+ buttons += [[InlineKeyboardButton(text='➕ Create Code',callback_data='adm:discount_create')],
+             [InlineKeyboardButton(text='🔙 Kembali',callback_data='adm:discounts')]]
+ await c.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+ await c.answer()
+
+@router.callback_query(F.data.startswith('adm:discount_detail:'))
+async def admin_discount_detail(c):
+ if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+ try: did=int(c.data.rsplit(':',1)[1])
+ except ValueError: return await c.answer('ID tidak valid.',show_alert=True)
+ p=await get_pool(); r=await p.fetchrow('SELECT * FROM discount_codes WHERE id=$1',did)
+ if not r: return await c.answer('Kode tidak ditemukan.',show_alert=True)
+ expiry=r['expires_at']
+ try:
+  from zoneinfo import ZoneInfo
+  expiry=expiry.astimezone(ZoneInfo('Asia/Jakarta')).strftime('%d-%m-%Y %H:%M WIB')
+ except Exception: expiry=str(expiry)
+ kind='Persentase' if r['discount_type']=='percent' else 'Nominal Rupiah'
+ text=(f"🎟 <b>DETAIL CODE DISCOUNT #{did}</b>\n\n"
+       f"Kode: <code>{html.escape(r['code'])}</code>\nJenis: {kind}\nNilai: {r['discount_value']}{'%' if r['discount_type']=='percent' else ' Rp'}\n"
+       f"Pemakaian: {r['used_count']}/{r['max_uses']}\nStatus: {'Aktif' if r['active'] else 'Nonaktif'}\nBerlaku sampai: {expiry}\n"
+       f"Tier: {html.escape(str(r.get('tier','all')))}\nPaket: {html.escape(', '.join(r.get('package_codes') or []) or 'Semua paket')}")
+ kb=InlineKeyboardMarkup(inline_keyboard=[
+  [InlineKeyboardButton(text='✏️ Edit Kode',callback_data=f'adm:discount_edit:{did}')],
+  [InlineKeyboardButton(text='⛔ Nonaktifkan' if r['active'] else '✅ Aktifkan',callback_data=f'adm:discount_toggle:{did}')],
+  [InlineKeyboardButton(text='🗑 Hapus Kode',callback_data=f'adm:discount_delete_confirm:{did}')],
+  [InlineKeyboardButton(text='🔙 Daftar Kode',callback_data='adm:discount_manage')]
+ ])
+ await c.message.edit_text(text,parse_mode='HTML',reply_markup=kb); await c.answer()
+
+@router.callback_query(F.data.startswith('adm:discount_delete_confirm:'))
+async def admin_discount_delete_confirm(c):
+ if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+ did=int(c.data.rsplit(':',1)[1]); p=await get_pool()
+ r=await p.fetchrow('SELECT code FROM discount_codes WHERE id=$1',did)
+ if not r: return await c.answer('Kode tidak ditemukan.',show_alert=True)
+ await c.message.edit_text(f"⚠️ Hapus kode <code>{html.escape(r['code'])}</code>? Tindakan ini tidak dapat dibatalkan.",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+  [InlineKeyboardButton(text='Ya, Hapus',callback_data=f'adm:discount_delete:{did}')],
+  [InlineKeyboardButton(text='Batal',callback_data=f'adm:discount_detail:{did}')]
+ ])); await c.answer()
+
+@router.callback_query(F.data.startswith('adm:discount_delete:'))
+async def admin_discount_delete(c):
+ if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+ did=int(c.data.rsplit(':',1)[1]); p=await get_pool()
+ r=await p.fetchrow('DELETE FROM discount_codes WHERE id=$1 RETURNING code',did)
+ if not r: return await c.answer('Kode tidak ditemukan.',show_alert=True)
+ await c.answer('Kode berhasil dihapus.')
+ await admin_discount_manage(c)
+
+@router.callback_query(F.data.startswith('adm:discount_edit:'))
+async def admin_discount_edit_start(c: CallbackQuery, state: FSMContext):
+ if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+ did=int(c.data.rsplit(':',1)[1]); p=await get_pool(); r=await p.fetchrow('SELECT id,code FROM discount_codes WHERE id=$1',did)
+ if not r: return await c.answer('Kode tidak ditemukan.',show_alert=True)
+ await state.clear(); await state.set_state(AdminState.discount_edit); await state.update_data(discount_id=did)
+ await c.message.answer(f"✏️ <b>EDIT CODE DISCOUNT</b>\n\nKode saat ini: <code>{html.escape(r['code'])}</code>\nKirim nama kode baru (3–32 huruf/angka, tanpa spasi). Ketik /cancel untuk batal.",parse_mode='HTML')
+ await c.answer()
+
+@router.message(AdminState.discount_edit)
+async def admin_discount_edit_save(m: Message, state: FSMContext):
+ if not await admin_access(m.from_user.id): await state.clear(); return
+ raw=(m.text or '').strip()
+ if raw.lower() in ('/cancel','batal','cancel'):
+  await state.clear(); return await m.answer('Edit dibatalkan.')
+ code=raw.upper()
+ if not re.fullmatch(r'[A-Z0-9_-]{3,32}',code): return await m.answer('Format tidak valid. Gunakan 3–32 huruf/angka tanpa spasi.')
+ data=await state.get_data(); p=await get_pool()
+ try:
+  row=await p.fetchrow('UPDATE discount_codes SET code=$1 WHERE id=$2 RETURNING id',code,int(data['discount_id']))
+ except Exception as e:
+  if getattr(e,'sqlstate',None)=='23505': return await m.answer('Kode tersebut sudah digunakan. Masukkan nama lain.')
+  raise
+ await state.clear()
+ if not row: return await m.answer('Kode tidak ditemukan.')
+ await m.answer(f'✅ Nama kode berhasil diubah menjadi <code>{html.escape(code)}</code>.',parse_mode='HTML')
 
 @router.callback_query(F.data.startswith('adm:discount_toggle:'))
 async def admin_discount_toggle(c):
@@ -1698,7 +1782,7 @@ async def admin_discount_toggle(c):
  p=await get_pool()
  row=await p.fetchrow("UPDATE discount_codes SET active=NOT active WHERE id=$1 RETURNING active,code",discount_id)
  if not row: return await c.answer('Kode tidak ditemukan.',show_alert=True)
- await admin_discounts(c)
+ await admin_discount_detail(c)
 
 @router.callback_query(F.data == 'adm:discount_create')
 async def admin_discount_create(c: CallbackQuery, state: FSMContext):
