@@ -24,10 +24,11 @@ def channel_reply_kb(lang: str = "id", is_admin: bool = False):
         KeyboardButton(text="📚 Lihat Daftar VIP" if not en else "📚 View VIP List"),
         KeyboardButton(text="📥 Getfile"),
         KeyboardButton(text="🔑 Code"),
+        KeyboardButton(text="🎟 My Code Discount"),
         KeyboardButton(text="💬 Support"),
         KeyboardButton(text="❓ Help"),
     ]
-    rows = [[labels[0], labels[1]], [labels[2], labels[3]], [labels[4], labels[5]]]
+    rows = [[labels[0], labels[1]], [labels[2], labels[3]], [labels[4]], [labels[5], labels[6]]]
     return ReplyKeyboardMarkup(
         keyboard=rows,
         resize_keyboard=True,
