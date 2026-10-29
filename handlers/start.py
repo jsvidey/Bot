@@ -14,36 +14,44 @@ router = Router()
 
 WELCOME = {
     "id": (
-        "👋 Halo, {name}!\\n"
-        "📥 Kirim kode media untuk mulai.\\n"
-        "🚀 Ketik /start untuk refresh bot.\\n"
-        "👑 Ketik /vipbot untuk mendapatkan akses semua Code di bot.\\n"
-        "💎 Ketik /vip untuk melihat akses Group VIP.\\n"
-        "🔑 Ketik /code untuk melihat semua Code.\\n"
-        "🧑‍🧑‍🧒‍🧒 Ketik /group untuk info kumpulan group.\\n\\n"
-        "📋 <b>List group 👇</b>\\n"
-        '<a href="https://t.me/+vM6UWm69_6gyMjNk">Channel Update</a>\\n'
-        '<a href="https://t.me/noticsaluran">Channel Big Update Rare</a>\\n'
-        '<a href="https://t.me/+ezE2-f-YtEo4NzU1">Pembuatan bot dan website</a>\\n\\n'
-        "✨ <b>Silakan kirim media sekarang!</b>\\n"
-        "🔎 Jika belum punya code, klik menu <b>🔑 Code</b> untuk melihat daftar Code.\\n"
-        "⭐ Klik judul Code untuk membuka halaman review; bot akan mengirim review dan media terkait."
+        "👋 <b>SELAMAT DATANG DI GG BOT</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📥 <b>CARA MENGGUNAKAN BOT</b>\n"
+        "Kirim <i>Media Code</i> untuk mulai mencari dan membuka media.\n\n"
+        "🔑 <b>MENU BOT</b>\n"
+        "• <code>/start</code> — Muat ulang bot\n"
+        "• <code>/code</code> — Jelajahi daftar Code\n"
+        "• <code>/vipbot</code> — Akses semua Code bot\n"
+        "• <code>/vip</code> — Informasi akses VIP Group\n"
+        "• <code>/group</code> — Informasi grup\n\n"
+        "📋 <b>CHANNEL &amp; GRUP RESMI</b>\n"
+        '📢 <a href="https://t.me/+vM6UWm69_6gyMjNk">Channel Update</a>\n'
+        '🌟 <a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\n'
+        '🛠 <a href="https://t.me/+ezE2-f-YtEo4NzU1">Bot &amp; Website Development</a>\n\n'
+        "━━━━━━━━━━━━━━━━━━\n"
+        "✨ <b>Belum punya Code?</b> Tekan menu <b>🔑 Code</b> untuk melihat daftar.\n"
+        "⭐ Tekan judul Code untuk membuka halaman review dan melihat media terkait.\n\n"
+        "📩 <b>Silakan kirim Media Code untuk melanjutkan.</b>"
     ),
     "en": (
-        "👋 Hello, {name}!\\n"
-        "📥 Send a media code to get started.\\n"
-        "🚀 Type /start to refresh the bot.\\n"
-        "👑 Type /vipbot to get access to all Codes in the bot.\\n"
-        "💎 Type /vip to view VIP Group access.\\n"
-        "🔑 Type /code to browse all Codes.\\n"
-        "🧑‍🧑‍🧒‍🧒 Type /group for group information.\\n\\n"
-        "📋 <b>Group list 👇</b>\\n"
-        '<a href="https://t.me/+vM6UWm69_6gyMjNk">Updates Channel</a>\\n'
-        '<a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\\n'
-        '<a href="https://t.me/+ezE2-f-YtEo4NzU1">Bot and Website Development</a>\\n\\n'
-        "✨ <b>Send your media code now!</b>\\n"
-        "🔎 If you don't have a code yet, tap the <b>🔑 Code</b> menu to browse the code list.\\n"
-        "⭐ Tap a Code title to open its review page; the bot will send the review and related media."
+        "👋 <b>WELCOME TO GG BOT</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📥 <b>HOW TO USE</b>\n"
+        "Send a <i>Media Code</i> to find and open media.\n\n"
+        "🔑 <b>BOT MENU</b>\n"
+        "• <code>/start</code> — Refresh the bot\n"
+        "• <code>/code</code> — Browse all Codes\n"
+        "• <code>/vipbot</code> — Access all bot Codes\n"
+        "• <code>/vip</code> — VIP Group access information\n"
+        "• <code>/group</code> — Group information\n\n"
+        "📋 <b>OFFICIAL CHANNELS &amp; GROUPS</b>\n"
+        '📢 <a href="https://t.me/+vM6UWm69_6gyMjNk">Updates Channel</a>\n'
+        '🌟 <a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\n'
+        '🛠 <a href="https://t.me/+ezE2-f-YtEo4NzU1">Bot &amp; Website Development</a>\n\n'
+        "━━━━━━━━━━━━━━━━━━\n"
+        "✨ <b>No Code yet?</b> Tap the <b>🔑 Code</b> menu to browse the list.\n"
+        "⭐ Tap a Code title to open its review page and view related media.\n\n"
+        "📩 <b>Send a Media Code to continue.</b>"
     ),
 }
 
