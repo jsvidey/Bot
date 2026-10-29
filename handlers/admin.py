@@ -1805,20 +1805,49 @@ async def admin_discount_save_button(c: CallbackQuery, state: FSMContext):
     if not await admin_access(c.from_user.id): return await c.answer('No access', show_alert=True)
     data = await state.get_data()
     if data.get('step') != 'confirm': return await c.answer('Sesi pembuatan kode tidak ditemukan. Mulai lagi.', show_alert=True)
-    code, typ = data['code'], data['discount_type']
-    value, hours, uses, tier = int(data['value']), int(data['hours']), int(data['uses']), data['tier']
-    packages = data.get('package_codes', [])
+    # Validate FSM data before attempting the database write so stale or
+    # incomplete sessions produce a useful message instead of a hidden failure.
     try:
+        code = str(data['code']).strip().upper()
+        typ = str(data['discount_type'])
+        value, hours, uses = int(data['value']), int(data['hours']), int(data['uses'])
+        tier = str(data['tier'])
+        packages = data.get('package_codes') or []
+        if not re.fullmatch(r'[A-Z0-9_-]{3,32}', code):
+            raise ValueError('Nama kode tidak valid.')
+        if typ not in ('percent', 'fixed') or value <= 0:
+            raise ValueError('Jenis atau nilai diskon tidak valid.')
+        if typ == 'percent' and not 10 <= value <= 70:
+            raise ValueError('Persentase diskon harus 10–70%.')
+        if not 1 <= hours <= 8760 or not 1 <= uses <= 10:
+            raise ValueError('Masa berlaku atau batas pengguna di luar ketentuan.')
+        if tier not in ('all', 'vip', 'vvip'):
+            raise ValueError('Tier kode tidak valid.')
+        if not isinstance(packages, (list, tuple)) or any(not isinstance(x, str) for x in packages):
+            raise ValueError('Daftar paket tidak valid.')
         if typ == 'percent' and any(x in {'vip_15d', 'vvip_15d'} for x in packages) and value > 50:
             return await c.answer('Diskon paket 15 hari maksimal 50%. Mulai ulang dan ubah persentase.', show_alert=True)
+    except (KeyError, TypeError, ValueError) as e:
+        return await c.answer(f'Data kode belum lengkap atau tidak valid: {html.escape(str(e))} Silakan mulai lagi.', show_alert=True)
+
+    try:
         await (await get_pool()).execute(
-            """INSERT INTO discount_codes(code,discount_type,discount_value,min_price,max_uses,starts_at,expires_at,package_codes,tier,created_by)
-               VALUES($1,$2,$3,7000,$4,NOW(),NOW()+($5::text||' hours')::interval,$6,$7,$8)""",
-            code, typ, value, uses, hours, packages, tier, c.from_user.id
+            """INSERT INTO discount_codes
+               (code,discount_type,discount_value,min_price,max_uses,starts_at,expires_at,package_codes,tier,created_by)
+               VALUES($1,$2,$3,7000,$4,NOW(),NOW()+($5::int * INTERVAL '1 hour'),$6::text[],$7,$8)""",
+            code, typ, value, uses, hours, list(packages), tier, c.from_user.id
         )
     except Exception as e:
-        # Do not leak database internals to the user.
-        return await c.answer('Gagal membuat kode. Mungkin kode sudah pernah digunakan. Coba nama lain.', show_alert=True)
+        # Log the real exception for Railway logs; show a safe, actionable message.
+        import logging
+        logging.getLogger(__name__).exception('Failed to create discount code %s', code)
+        if 'UniqueViolation' in type(e).__name__ or getattr(e, 'sqlstate', None) == '23505':
+            return await c.answer('Kode tersebut sudah ada. Gunakan nama kode lain.', show_alert=True)
+        if getattr(e, 'sqlstate', None) == '42P01' or 'UndefinedTable' in type(e).__name__:
+            return await c.answer('Tabel Code Discount belum tersedia. Restart/redeploy bot agar migrasi database berjalan.', show_alert=True)
+        if getattr(e, 'sqlstate', None) == '42703' or 'UndefinedColumn' in type(e).__name__:
+            return await c.answer('Struktur database Code Discount belum diperbarui. Restart/redeploy bot dengan file perbaikan ini.', show_alert=True)
+        return await c.answer('Gagal menyimpan kode ke database. Detail error sudah dicatat di log Railway. Coba restart/redeploy bot; jika masih gagal, kirim log error.', show_alert=True)
     await state.clear()
     await c.message.edit_text(
         f'✅ <b>Code Discount berhasil dibuat!</b>\n\nKode: <code>{html.escape(code)}</code>\n'
