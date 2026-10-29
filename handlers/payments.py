@@ -207,7 +207,7 @@ async def approve(c):
  try:
   from aiogram.types import InlineKeyboardMarkup,InlineKeyboardButton
   if r['target_type'] != 'vip' and r['target_code']:
-   await c.bot.send_message(r['user_id'],f'✅ Pembayaran manual disetujui.\n🔑 Code: <code>{r["target_code"]}</code>',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='📥 Buka Code',callback_data=f'getcode:{r["target_code"]}')]]))
+   await c.bot.send_message(r['user_id'],f'✅ Pembayaran manual disetujui.\n🔑 Code: <code>{r["target_code"]}</code>',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='📂 Buka Media',callback_data=f'openpaid:{r["target_code"]}')]]))
   elif r['target_type']=='vip':
    await c.bot.send_message(r['user_id'],'✅ Pembayaran manual disetujui. VIP telah diaktifkan.')
   else:
