@@ -627,6 +627,14 @@ async def payfile(c,state):
     _,requested,code=c.data.split(':',2); f=await get_file(code)
     if not f:return await c.answer('Code tidak ditemukan.',show_alert=True)
     code=str(f['code'])
+    # Never ask a user to pay for the same code again while their paid access is active.
+    if await has_permanent_or_paid_unlock(c.from_user.id, code):
+        return await c.answer('✅ Code ini sudah kamu beli. Buka code dari menu sebelumnya; tidak perlu membayar lagi.' if lang == 'id' else '✅ You already purchased this code. Open it from the previous menu; no need to pay again.', show_alert=True)
+    # Avoid creating a second invoice while a manual proof for this code is still pending.
+    pending = await (await get_pool()).fetchval("""SELECT 1 FROM manual_payments
+        WHERE user_id=$1 AND target_code=$2 AND target_type='file' AND status='pending' LIMIT 1""", c.from_user.id, code)
+    if pending:
+        return await c.answer('🧾 Pembayaran untuk code ini masih menunggu proses. Kirim bukti atau tunggu admin memeriksa.' if lang == 'id' else '🧾 Payment for this code is already pending. Submit proof or wait for admin review.', show_alert=True)
     amount=int(f['price_idr'] or 0)
     if amount<=0:return await c.answer(_L(lang,'free_code'),show_alert=True)
     requested=str(requested).lower()

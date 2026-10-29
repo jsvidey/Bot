@@ -164,10 +164,11 @@ async def approve(c):
    if r['target_type'] != 'vip' and r['target_code']:
     f=await conn.fetchrow("SELECT owner_id,price_idr FROM files WHERE code=$1 AND active=TRUE",r['target_code'])
     if f:
-     await conn.execute("UPDATE files SET views=views+1 WHERE code=$1",r['target_code'])
-     await conn.execute("UPDATE users SET total_unlocks=total_unlocks+1 WHERE user_id=$2",r['user_id'])
-     await conn.execute("""INSERT INTO unlock_transactions(user_id,code,payment_type,amount,expires_at)
-        VALUES($1,$2,'qr',$3,NOW()+INTERVAL '24 hours')""",r['user_id'],r['target_code'],r['amount'])
+     already_owned=await conn.fetchval("""SELECT 1 FROM unlock_transactions WHERE user_id=$1 AND code=$2 AND expires_at>NOW() LIMIT 1""",r['user_id'],r['target_code'])
+     if not already_owned:
+      await conn.execute("UPDATE files SET views=views+1 WHERE code=$1",r['target_code'])
+      await conn.execute("UPDATE users SET total_unlocks=total_unlocks+1 WHERE user_id=$1",r['user_id'])
+      await conn.execute("""INSERT INTO unlock_transactions(user_id,code,payment_type,amount,expires_at) VALUES($1,$2,'qr',$3,NOW()+INTERVAL '100 years')""",r['user_id'],r['target_code'],r['amount'])
    elif r['target_type'] in ('points','stars'):
     raise ValueError('Legacy points/stars purchases are disabled')
    elif r['target_type']=='vip':
@@ -177,12 +178,13 @@ async def approve(c):
     if daily_limit<=0:
      days=int(r['quantity'])
      daily_limit={1:2,3:4,4:3,5:6,7:4,10:10,15:5,30:30}.get(days,max(2,days))
+    days=max(1, int(r['quantity'] or 0))
     await conn.execute("""
      UPDATE users SET vip=TRUE,
-         vip_until=GREATEST(COALESCE(vip_until,NOW()),NOW())+($1||' days')::interval,
+         vip_until=GREATEST(COALESCE(vip_until,NOW()),NOW()) + make_interval(days => $1),
          vip_plan_days=$1,vip_daily_limit=$2,vip_tier=$3
      WHERE user_id=$4
-    """,int(r['quantity']),daily_limit,tier,r['user_id'])
+    """,days,daily_limit,tier,r['user_id'])
  # Remove the user's manual QR after approval.
  try:
   if r['qr_message_id']:
