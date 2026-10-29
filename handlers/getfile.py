@@ -721,7 +721,9 @@ async def payfile(c,state):
           VALUES($1,$2,$3,'file',1,'pending') RETURNING id""",c.from_user.id,amount,code)
         msg=await c.message.answer_photo(qr,caption=f"QR MANUAL\n\nCode: <code>{html.escape(code)}</code>\nNominal: {fmt(amount)}" + (f"\nCode Discount: {html.escape(str(discount_row['code']))}\nHarga awal: {fmt(original_amount)}" if discount_row else '') + "\n\nSetelah membayar, tekan Cek Pembayaran lalu kirim screenshot bukti.",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'mancheck:{row["id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'mancancel:{row["id"]}')]]))
         await p.execute("UPDATE manual_payments SET qr_message_id=$1 WHERE id=$2",msg.message_id,row['id'])
-        if discount_row: await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
+        if discount_row:
+            await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
+            await p.execute("DELETE FROM user_discount_codes WHERE user_id=$1 AND discount_id=$2",c.from_user.id,discount_id)
         return
     meta={"code":code}
     if discount_row: meta.update({"discount_id":discount_id,"discount_code":discount_row['code'],"original_amount":original_amount,"discount_amount":original_amount-amount})
@@ -739,10 +741,15 @@ async def payfile(c,state):
         p=await get_pool(); row=await p.fetchrow("INSERT INTO manual_payments(user_id,amount,target_code,target_type,quantity,status) VALUES($1,$2,$3,'file',1,'pending') RETURNING id",c.from_user.id,amount,code)
         msg=await c.message.answer_photo(qr,caption=f"QR MANUAL\n\nCode: <code>{html.escape(code)}</code>\nNominal: {fmt(amount)}" + (f"\nCode Discount: {html.escape(str(discount_row['code']))}\nHarga awal: {fmt(original_amount)}" if discount_row else '') + "\n\nSetelah membayar, tekan Cek Pembayaran lalu kirim screenshot bukti.",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'mancheck:{row["id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'mancancel:{row["id"]}')]]))
         await p.execute("UPDATE manual_payments SET qr_message_id=$1 WHERE id=$2",msg.message_id,row['id'])
-        if discount_row: await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
+        if discount_row:
+            await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
+            await p.execute("DELETE FROM user_discount_codes WHERE user_id=$1 AND discount_id=$2",c.from_user.id,discount_id)
         return
     if not r:return await c.answer('Semua metode pembayaran tidak tersedia untuk nominal ini.',show_alert=True)
-    if discount_row: await (await get_pool()).execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
+    if discount_row:
+        p=await get_pool()
+        await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
+        await p.execute("DELETE FROM user_discount_codes WHERE user_id=$1 AND discount_id=$2",c.from_user.id,discount_id)
     data=qr_bytes(r.get('qr_string')); text=f"PAYMENT\n\nCode: <code>{code}</code>\nNominal: {fmt(amount)}" + (f"\nCode Discount: {html.escape(str(discount_row['code']))}\nHarga awal: {fmt(original_amount)}" if discount_row else '') + f"\nProvider: {provider.upper()}\nInvoice: <code>{r['invoice_id']}</code>\n\nSetelah membayar, tekan Cek Pembayaran."
     kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'paycheck:{r["invoice_id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'paycancel:{r["invoice_id"]}')]])
     if data: await c.message.answer_photo(BufferedInputFile(data,filename='payment.png'),caption=text,parse_mode='HTML',reply_markup=kb)

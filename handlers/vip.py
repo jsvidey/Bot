@@ -610,7 +610,9 @@ async def pay(c, state):
         meta.update({"discount_id": discount_id, "discount_code": d["code"], "original_amount": int(r["price"]), "discount_amount": int(r["price"])-amount})
     result, status = await create_purchase(c.from_user.id, "vip", r["duration_days"], amount, provider, c.from_user.full_name, metadata=meta)
     if result and discount_id:
-        await (await get_pool()).execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses", discount_id)
+        p = await get_pool()
+        await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses", discount_id)
+        await p.execute("DELETE FROM user_discount_codes WHERE user_id=$1 AND discount_id=$2", c.from_user.id, discount_id)
     used_provider = provider
     # Automatically try the other configured provider before giving up.
     if not result:
@@ -842,32 +844,91 @@ class DiscountClaimState(StatesGroup):
 @router.message(F.text.regexp(r"(?i)^my code discount$"))
 @router.message(F.text.regexp(r"(?i)^🎟 my code discount$"))
 async def my_discount_codes(m):
-    rows=await (await get_pool()).fetch("""SELECT dc.code,dc.discount_type,dc.discount_value,dc.expires_at,dc.used_count,dc.max_uses
+    p = await get_pool()
+    rows = await p.fetch("""SELECT dc.code,dc.discount_type,dc.discount_value,dc.expires_at,dc.used_count,dc.max_uses,
+      CASE WHEN dc.expires_at<=NOW() THEN 'expired' WHEN dc.used_count>=dc.max_uses THEN 'full' ELSE 'active' END AS code_status
       FROM user_discount_codes ud JOIN discount_codes dc ON dc.id=ud.discount_id
-      WHERE ud.user_id=$1 ORDER BY ud.claimed_at DESC LIMIT 50""",m.from_user.id)
-    lines=["🎟 <b>MY CODE DISCOUNT</b>",""]
-    lines += [f"• <code>{html.escape(r['code'])}</code> — {r['discount_value']}{'%' if r['discount_type']=='percent' else ' Rp'} — sampai {r['expires_at']} — {r['used_count']}/{r['max_uses']}" for r in rows]
-    if not rows: lines.append("Kamu belum punya code discount.")
-    kb=InlineKeyboardMarkup(inline_keyboard=[
-      [InlineKeyboardButton(text="➕ Masukkan Code Discount",callback_data="discount:claim")],
-      [InlineKeyboardButton(text="📣 Ambil Code Discount",url=DISCOUNT_GROUP_URL)]])
-    await m.answer("\n".join(lines),parse_mode="HTML",reply_markup=kb)
+      WHERE ud.user_id=$1 ORDER BY ud.claimed_at DESC LIMIT 50""", m.from_user.id)
+    lines = ["🎟 <b>MY CODE DISCOUNT</b>", ""]
+    if rows:
+        for r in rows:
+            status = {"expired": "⌛ Kadaluarsa", "full": "⛔ Kuota penggunaan penuh", "active": "✅ Aktif"}[r["code_status"]]
+            value = f"{r['discount_value']}%" if r["discount_type"] == "percent" else f"Rp{int(r['discount_value']):,}".replace(",", ".")
+            lines.append(f"• <code>{html.escape(r['code'])}</code> — {value} — {status} — pemakaian {r['used_count']}/{r['max_uses']}")
+    else:
+        lines.append("Kamu belum memiliki Code Discount yang berhasil di-redeem.")
+    lines += ["", "📘 <b>Bantuan Code Discount</b>",
+      "1. Tekan <b>Redeem Code</b> lalu kirim kode yang kamu dapatkan dari grup.",
+      "2. Jika berhasil, kode akan masuk ke daftar My Code Discount.",
+      "3. Saat membeli Code Media atau paket VIP/VVIP yang sesuai, pilih tombol Code Discount sebelum membayar.",
+      "4. Diskon hanya berlaku untuk transaksi minimal Rp7.000 dan harus sesuai paket, masa berlaku, serta kuota.",
+      "", "📣 Cara mendapatkan: buka grup Code Discount di bawah dan gunakan kode yang dibagikan admin."]
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text="🎟 Redeem Code", callback_data="discount:claim")],
+      [InlineKeyboardButton(text="📣 Dapatkan Code Discount", url=DISCOUNT_GROUP_URL)],
+      [InlineKeyboardButton(text="🔄 Refresh", callback_data="discount:refresh")]])
+    await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
 
-@router.callback_query(F.data=="discount:claim")
-async def discount_claim_start(c,state:FSMContext):
+@router.callback_query(F.data == "discount:refresh")
+async def discount_refresh(c):
+    await c.message.delete()
+    # Reuse the same display path without requiring the user to type the menu again.
+    class _MessageProxy:
+        from_user = c.from_user
+        answer = c.message.answer
+    proxy = _MessageProxy()
+    await my_discount_codes(proxy)
+    await c.answer("Daftar Code Discount diperbarui.")
+
+@router.callback_query(F.data == "discount:claim")
+async def discount_claim_start(c, state: FSMContext):
     await state.set_state(DiscountClaimState.code)
-    await c.message.answer("Kirim code discount yang kamu dapatkan dari grup.")
+    await c.message.answer("🎟 <b>Redeem Code Discount</b>\nKirim kode yang kamu dapatkan dari grup.\n\nKetik /cancel untuk membatalkan.", parse_mode="HTML")
     await c.answer()
 
 @router.message(DiscountClaimState.code)
-async def discount_claim_save(m,state:FSMContext):
-    code=(m.text or "").strip().upper()
-    p=await get_pool()
-    d=await p.fetchrow("SELECT * FROM discount_codes WHERE code=$1 AND active AND starts_at<=NOW() AND expires_at>NOW() AND used_count<max_uses",code)
-    if not d: return await m.answer("❌ Code tidak valid, kedaluwarsa, atau kuota sudah habis.")
-    await p.execute("INSERT INTO user_discount_codes(user_id,discount_id) VALUES($1,$2) ON CONFLICT DO NOTHING",m.from_user.id,d["id"])
+async def discount_claim_save(m, state: FSMContext):
+    raw = (m.text or "").strip()
+    if raw.lower() == "/cancel":
+        await state.clear()
+        return await m.answer("Redeem dibatalkan. Buka My Code Discount untuk mencoba lagi.")
+    code = raw.upper()
+    p = await get_pool()
+    async with p.acquire() as conn:
+        async with conn.transaction():
+            d = await conn.fetchrow("SELECT * FROM discount_codes WHERE code=$1 FOR UPDATE", code)
+            if not d:
+                archived = await conn.fetchrow("SELECT status FROM discount_code_archive WHERE code=$1", code)
+                if archived and archived["status"] == "expired":
+                    reason = "⌛ Kode ini sudah kedaluwarsa dan tidak bisa di-redeem lagi."
+                elif archived and archived["status"] in ("full", "used"):
+                    reason = "⛔ Kode ini sudah penuh atau seluruh kuotanya terpakai. Silakan ambil kode lain di grup."
+                else:
+                    reason = "❌ Kode tidak ditemukan. Periksa kembali penulisan kode atau minta kode yang benar di grup."
+                await state.clear()
+                return await m.answer(reason, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📣 Cari Kode Lain", url=DISCOUNT_GROUP_URL)], [InlineKeyboardButton(text="🎟 My Code Discount", callback_data="discount:refresh")]]))
+            if not d["active"] or d["starts_at"] > __import__("datetime").datetime.now(d["starts_at"].tzinfo):
+                await state.clear()
+                return await m.answer("⛔ Kode belum aktif atau sudah dinonaktifkan admin.")
+            if d["expires_at"] <= __import__("datetime").datetime.now(d["expires_at"].tzinfo):
+                await conn.execute("INSERT INTO discount_code_archive(code,status) VALUES($1,'expired') ON CONFLICT(code) DO UPDATE SET status='expired',archived_at=NOW()", code)
+                await state.clear()
+                return await m.answer("⌛ Kode ini sudah kedaluwarsa. Silakan ambil kode yang masih aktif di grup.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📣 Ambil Kode Lain", url=DISCOUNT_GROUP_URL)]]))
+            if int(d["used_count"]) >= int(d["max_uses"]):
+                await conn.execute("INSERT INTO discount_code_archive(code,status) VALUES($1,'full') ON CONFLICT(code) DO UPDATE SET status='full',archived_at=NOW()", code)
+                await state.clear()
+                return await m.answer("⛔ Maaf, kuota penggunaan kode ini sudah penuh. Silakan ambil kode lain di grup.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📣 Ambil Kode Lain", url=DISCOUNT_GROUP_URL)]]))
+            already = await conn.fetchval("SELECT 1 FROM user_discount_codes WHERE user_id=$1 AND discount_id=$2", m.from_user.id, d["id"])
+            if already:
+                await state.clear()
+                return await m.answer("ℹ️ Kode ini sudah ada di My Code Discount kamu. Kamu tidak perlu redeem ulang.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎟 My Code Discount", callback_data="discount:refresh")]]))
+            claimed = await conn.fetchval("SELECT COUNT(*) FROM user_discount_codes WHERE discount_id=$1", d["id"])
+            if int(claimed or 0) >= int(d["max_uses"]):
+                await state.clear()
+                return await m.answer("⛔ Kode ini sudah full: semua slot redeem sudah diambil pengguna lain. Silakan ambil kode lain di grup.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📣 Ambil Kode Lain", url=DISCOUNT_GROUP_URL)]]))
+            await conn.execute("INSERT INTO user_discount_codes(user_id,discount_id) VALUES($1,$2)", m.from_user.id, d["id"])
     await state.clear()
-    await m.answer(f"✅ Code discount <code>{html.escape(code)}</code> berhasil ditambahkan.",parse_mode="HTML")
+    await m.answer(f"✅ <b>Redeem berhasil!</b>\nCode Discount <code>{html.escape(code)}</code> sekarang tersimpan di My Code Discount kamu.\n\nGunakan saat checkout transaksi yang sesuai sebelum masa berlaku atau kuotanya habis.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎟 Buka My Code Discount", callback_data="discount:refresh")]]))
 
 
 @router.callback_query(F.data.startswith("vip_manual_discount:"))
@@ -888,6 +949,7 @@ async def vip_manual_discount(c,state:FSMContext):
       VALUES($1,$2,$3,'vip',$4,'pending',$5) RETURNING id""",c.from_user.id,amount,code,int(r["duration_days"]),f"Discount {d['code']} (harga awal {original})")
     did=int(manual["id"])
     await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",int(discount_id))
+    await p.execute("DELETE FROM user_discount_codes WHERE user_id=$1 AND discount_id=$2", c.from_user.id, int(discount_id))
     await state.set_state(ManualProofState.proof)
     await state.update_data(kind="vip",quantity=int(r["duration_days"]),amount=amount,target_code=code,manual_id=did)
     cap=f"🧾 <b>QR MANUAL VIP</b>\n{html.escape(str(r['name']))}\nHarga awal: Rp{original:,}\nCode: <code>{html.escape(str(d['code']))}</code>\nDiskon: Rp{original-amount:,}\n<b>Total: Rp{amount:,}</b>\n\nKirim screenshot bukti pembayaran.".replace(",",".")
