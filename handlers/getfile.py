@@ -277,6 +277,12 @@ async def open_choices(c,code,f):
     else:
         rows=[]
         if price>0:
+            if price >= 7000:
+                has_discount = await (await get_pool()).fetchval("""SELECT 1 FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
+                  WHERE ud.user_id=$1 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses
+                  AND dc.min_price<=$2 AND dc.tier='all' AND (cardinality(dc.package_codes)=0 OR 'media'=ANY(dc.package_codes) OR '*'=ANY(dc.package_codes)) LIMIT 1""", uid, price)
+                if has_discount:
+                    rows.append([InlineKeyboardButton(text='🎟 Pakai Code Discount',callback_data=f'mediadiscount:{code}')])
             if await enabled('bayargg'): rows.append([InlineKeyboardButton(text='QR 2',callback_data=f'payfile:bayargg:{code}')])
             if await enabled('cashi'): rows.append([InlineKeyboardButton(text='QR 1',callback_data=f'payfile:cashi:{code}')])
             if await enabled('manual'): rows.append([InlineKeyboardButton(text='🧾 QR Manual',callback_data=f'payfile:manual:{code}')])
@@ -621,10 +627,57 @@ async def openpaid(c):
         except Exception:
             pass
 
+@router.callback_query(F.data.startswith('mediadiscount:'))
+async def media_discount_list(c):
+    code=c.data.split(':',1)[1]
+    f=await get_file(code)
+    if not f: return await c.answer('Code media tidak ditemukan.',show_alert=True)
+    original=int(f['price_idr'] or 0)
+    if original < 7000: return await c.answer('Code discount hanya berlaku untuk harga Rp7.000 ke atas.',show_alert=True)
+    p=await get_pool()
+    rows=await p.fetch("""SELECT dc.* FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
+      WHERE ud.user_id=$1 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses
+      AND dc.min_price<=$2 AND dc.tier='all' AND (cardinality(dc.package_codes)=0 OR 'media'=ANY(dc.package_codes) OR '*'=ANY(dc.package_codes))
+      ORDER BY dc.expires_at""",c.from_user.id,original)
+    if not rows:
+        return await c.answer('Tidak ada code discount yang cocok untuk Code Media ini.',show_alert=True)
+    buttons=[]
+    for d in rows:
+        off=original*int(d['discount_value'])//100 if d['discount_type']=='percent' else int(d['discount_value'])
+        final=max(1000,original-min(original-1000,off))
+        buttons.append([InlineKeyboardButton(text=f"🎟 {d['code']} • Rp{final:,}".replace(',','.'),callback_data=f"mediadiscapply:{code}:{d['id']}")])
+    buttons.append([InlineKeyboardButton(text='🔙 Kembali',callback_data=f'getcode:{code}')])
+    await c.message.answer(f"🎟 Code Media: {code}\nHarga normal: Rp{original:,}\nPilih code discount:".replace(',','.'),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.answer()
+
+@router.callback_query(F.data.startswith('mediadiscapply:'))
+async def media_discount_apply(c):
+    _,code,discount_id=c.data.split(':',2)
+    f=await get_file(code)
+    if not f: return await c.answer('Code media tidak ditemukan.',show_alert=True)
+    original=int(f['price_idr'] or 0)
+    p=await get_pool()
+    d=await p.fetchrow("""SELECT dc.* FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
+      WHERE dc.id=$1 AND ud.user_id=$2 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses
+      AND dc.min_price<=$3 AND dc.tier='all' AND (cardinality(dc.package_codes)=0 OR 'media'=ANY(dc.package_codes) OR '*'=ANY(dc.package_codes))""",int(discount_id),c.from_user.id,original)
+    if not d or original<7000: return await c.answer('Code discount tidak valid atau tidak berlaku untuk media ini.',show_alert=True)
+    off=original*int(d['discount_value'])//100 if d['discount_type']=='percent' else int(d['discount_value'])
+    final=max(1000,original-min(original-1000,off))
+    buttons=[]
+    for provider,label in [('bayargg','QR 2'),('cashi','QR 1'),('manual','🧾 QR Manual')]:
+        if await enabled(provider): buttons.append([InlineKeyboardButton(text=label,callback_data=f'payfile:{provider}:{code}:{d["id"]}')])
+    if not buttons: return await c.answer('Metode pembayaran belum tersedia.',show_alert=True)
+    await c.message.answer(f"🎟 Code Discount: {d['code']}\nHarga awal: Rp{original:,}\nPotongan: Rp{original-final:,}\n💰 Total bayar: Rp{final:,}".replace(',','.'),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.answer()
+
 @router.callback_query(F.data.startswith('payfile:'))
 async def payfile(c,state):
     lang = await _lang(c.from_user.id)
-    _,requested,code=c.data.split(':',2); f=await get_file(code)
+    parts=c.data.split(':',3)
+    if len(parts)<3: return await c.answer('Permintaan pembayaran tidak valid.',show_alert=True)
+    _,requested,code=parts[:3]
+    discount_id=int(parts[3]) if len(parts)>3 and parts[3].isdigit() else None
+    f=await get_file(code)
     if not f:return await c.answer('Code tidak ditemukan.',show_alert=True)
     code=str(f['code'])
     # Never ask a user to pay for the same code again while their paid access is active.
@@ -635,7 +688,18 @@ async def payfile(c,state):
         WHERE user_id=$1 AND target_code=$2 AND target_type='file' AND status='pending' LIMIT 1""", c.from_user.id, code)
     if pending:
         return await c.answer('🧾 Pembayaran untuk code ini masih menunggu proses. Kirim bukti atau tunggu admin memeriksa.' if lang == 'id' else '🧾 Payment for this code is already pending. Submit proof or wait for admin review.', show_alert=True)
-    amount=int(f['price_idr'] or 0)
+    original_amount=int(f['price_idr'] or 0)
+    amount=original_amount
+    discount_row=None
+    if discount_id:
+        if original_amount < 7000:
+            return await c.answer('Code discount hanya berlaku untuk harga Rp7.000 ke atas.',show_alert=True)
+        discount_row=await (await get_pool()).fetchrow("""SELECT dc.* FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
+          WHERE dc.id=$1 AND ud.user_id=$2 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses
+          AND dc.min_price<=$3 AND dc.tier='all' AND (cardinality(dc.package_codes)=0 OR 'media'=ANY(dc.package_codes) OR '*'=ANY(dc.package_codes))""",discount_id,c.from_user.id,original_amount)
+        if not discount_row: return await c.answer('Code discount sudah tidak valid atau kuotanya habis.',show_alert=True)
+        off=original_amount*int(discount_row['discount_value'])//100 if discount_row['discount_type']=='percent' else int(discount_row['discount_value'])
+        amount=max(1000,original_amount-min(original_amount-1000,off))
     if amount<=0:return await c.answer(_L(lang,'free_code'),show_alert=True)
     requested=str(requested).lower()
     # QR 1 (BayarGG) has a provider minimum of Rp5.000. Automatically
@@ -655,25 +719,31 @@ async def payfile(c,state):
         p=await get_pool()
         row=await p.fetchrow("""INSERT INTO manual_payments(user_id,amount,target_code,target_type,quantity,status)
           VALUES($1,$2,$3,'file',1,'pending') RETURNING id""",c.from_user.id,amount,code)
-        msg=await c.message.answer_photo(qr,caption=f"QR MANUAL\n\nCode: <code>{html.escape(code)}</code>\nNominal: {fmt(amount)}\n\nSetelah membayar, tekan Cek Pembayaran lalu kirim screenshot bukti.",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'mancheck:{row["id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'mancancel:{row["id"]}')]]))
+        msg=await c.message.answer_photo(qr,caption=f"QR MANUAL\n\nCode: <code>{html.escape(code)}</code>\nNominal: {fmt(amount)}" + (f"\nCode Discount: {html.escape(str(discount_row['code']))}\nHarga awal: {fmt(original_amount)}" if discount_row else '') + "\n\nSetelah membayar, tekan Cek Pembayaran lalu kirim screenshot bukti.",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'mancheck:{row["id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'mancancel:{row["id"]}')]]))
         await p.execute("UPDATE manual_payments SET qr_message_id=$1 WHERE id=$2",msg.message_id,row['id'])
+        if discount_row: await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
         return
-    r,status=await create_purchase(c.from_user.id,'file',1,amount,provider,c.from_user.full_name,{"code":code})
+    meta={"code":code}
+    if discount_row: meta.update({"discount_id":discount_id,"discount_code":discount_row['code'],"original_amount":original_amount,"discount_amount":original_amount-amount})
+    r,status=await create_purchase(c.from_user.id,'file',1,amount,provider,c.from_user.full_name,meta)
     # Automatic failover: requested provider -> other configured provider -> manual QR.
     if not r:
         fallback = 'cashi' if provider == 'bayargg' else 'bayargg'
         if await enabled(fallback) and (fallback != 'bayargg' or amount >= 5000):
             provider=fallback
-            r,status=await create_purchase(c.from_user.id,'file',1,amount,provider,c.from_user.full_name,{"code":code})
+            r,status=await create_purchase(c.from_user.id,'file',1,amount,provider,c.from_user.full_name,meta)
     if not r and await enabled('manual'):
         provider='manual'
         qr=await (await get_pool()).fetchval("SELECT value FROM settings WHERE key='manual_qr_file_id'")
         if not qr:return await c.answer('Semua metode pembayaran tidak tersedia.',show_alert=True)
         p=await get_pool(); row=await p.fetchrow("INSERT INTO manual_payments(user_id,amount,target_code,target_type,quantity,status) VALUES($1,$2,$3,'file',1,'pending') RETURNING id",c.from_user.id,amount,code)
-        msg=await c.message.answer_photo(qr,caption=f"QR MANUAL\n\nCode: <code>{html.escape(code)}</code>\nNominal: {fmt(amount)}\n\nSetelah membayar, tekan Cek Pembayaran lalu kirim screenshot bukti.",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'mancheck:{row["id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'mancancel:{row["id"]}')]]))
-        await p.execute("UPDATE manual_payments SET qr_message_id=$1 WHERE id=$2",msg.message_id,row['id']); return
+        msg=await c.message.answer_photo(qr,caption=f"QR MANUAL\n\nCode: <code>{html.escape(code)}</code>\nNominal: {fmt(amount)}" + (f"\nCode Discount: {html.escape(str(discount_row['code']))}\nHarga awal: {fmt(original_amount)}" if discount_row else '') + "\n\nSetelah membayar, tekan Cek Pembayaran lalu kirim screenshot bukti.",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'mancheck:{row["id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'mancancel:{row["id"]}')]]))
+        await p.execute("UPDATE manual_payments SET qr_message_id=$1 WHERE id=$2",msg.message_id,row['id'])
+        if discount_row: await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
+        return
     if not r:return await c.answer('Semua metode pembayaran tidak tersedia untuk nominal ini.',show_alert=True)
-    data=qr_bytes(r.get('qr_string')); text=f"PAYMENT\n\nCode: <code>{code}</code>\nNominal: {fmt(amount)}\nProvider: {provider.upper()}\nInvoice: <code>{r['invoice_id']}</code>\n\nSetelah membayar, tekan Cek Pembayaran."
+    if discount_row: await (await get_pool()).execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
+    data=qr_bytes(r.get('qr_string')); text=f"PAYMENT\n\nCode: <code>{code}</code>\nNominal: {fmt(amount)}" + (f"\nCode Discount: {html.escape(str(discount_row['code']))}\nHarga awal: {fmt(original_amount)}" if discount_row else '') + f"\nProvider: {provider.upper()}\nInvoice: <code>{r['invoice_id']}</code>\n\nSetelah membayar, tekan Cek Pembayaran."
     kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'paycheck:{r["invoice_id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'paycancel:{r["invoice_id"]}')]])
     if data: await c.message.answer_photo(BufferedInputFile(data,filename='payment.png'),caption=text,parse_mode='HTML',reply_markup=kb)
     else: await c.message.answer(text,parse_mode='HTML',reply_markup=kb)

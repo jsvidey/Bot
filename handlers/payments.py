@@ -13,6 +13,7 @@ router=Router()
 class ManualProofState(StatesGroup):
     proof=State()
     qris=State()
+    reject_reason=State()
 
 def admin(uid): return uid==OWNER_ID or uid in ADMIN_IDS
 def fmt(n): return f"Rp{int(n):,}".replace(',','.')
@@ -215,16 +216,37 @@ async def approve(c):
  except: pass
 
 @router.callback_query(F.data.startswith('manreject:'))
-async def reject(c):
+async def reject(c, state:FSMContext):
  if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
- did=int(c.data.split(':')[1]); p=await get_pool()
- r=await p.fetchrow("UPDATE manual_payments SET status='rejected',admin_id=$1,processed_at=NOW() WHERE id=$2 AND status='pending' RETURNING user_id",c.from_user.id,did)
- await c.answer('Rejected' if r else 'Sudah diproses.'); 
- if r:
-  try:
-   full=await p.fetchrow("SELECT qr_message_id FROM manual_payments WHERE id=$1",did)
-   if full and full['qr_message_id']:
-    await c.bot.delete_message(int(r['user_id']),int(full['qr_message_id']))
-  except: pass
-  try: await c.bot.send_message(r['user_id'],'❌ Pembayaran manual ditolak. Silakan lakukan pembayaran baru jika diperlukan.')
-  except: pass
+ did=int(c.data.split(':',1)[1]); p=await get_pool()
+ row=await p.fetchrow("SELECT id,status FROM manual_payments WHERE id=$1",did)
+ if not row or row['status']!='pending':
+  return await c.answer('Pembayaran sudah diproses atau tidak ditemukan.',show_alert=True)
+ await state.set_state(ManualProofState.reject_reason)
+ await state.update_data(reject_payment_id=did)
+ await c.message.answer(f"✍️ Masukkan alasan penolakan untuk pembayaran manual #{did}. Pesan ini akan dikirim ke pengguna.")
+ await c.answer()
+
+@router.message(ManualProofState.reject_reason)
+async def reject_reason_message(m,state:FSMContext):
+ if not await admin_access(m.from_user.id): return
+ reason=(m.text or '').strip()
+ if len(reason)<3:
+  return await m.answer('Alasan terlalu singkat. Masukkan alasan penolakan (minimal 3 karakter).')
+ d=await state.get_data(); did=int(d.get('reject_payment_id') or 0); p=await get_pool()
+ async with p.acquire() as conn:
+  async with conn.transaction():
+   row=await conn.fetchrow("UPDATE manual_payments SET status='rejected',admin_id=$1,processed_at=NOW(),rejection_reason=$2,note=$2 WHERE id=$3 AND status='pending' RETURNING user_id,amount",m.from_user.id,reason[:1000],did)
+ if not row:
+  await state.clear()
+  return await m.answer('Pembayaran sudah diproses atau tidak ditemukan.')
+ try:
+  full=await p.fetchrow("SELECT qr_message_id FROM manual_payments WHERE id=$1",did)
+  if full and full['qr_message_id']:
+   await m.bot.delete_message(int(row['user_id']),int(full['qr_message_id']))
+ except Exception: pass
+ try:
+  await m.bot.send_message(row['user_id'],f"❌ <b>Pembayaran manual ditolak</b>\\nID: <code>{did}</code>\\nJumlah: Rp{int(row['amount']):,}\\nAlasan: {html.escape(reason)}\\n\\nSilakan perbaiki pembayaran atau hubungi admin.".replace(',','.'),parse_mode='HTML')
+ except Exception: pass
+ await state.clear()
+ await m.answer(f'✅ Pembayaran #{did} ditolak dan alasan dikirim ke pengguna.',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🧾 Manual Payment',callback_data='adm:manual')]]))

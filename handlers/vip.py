@@ -186,6 +186,7 @@ async def package_detail(c):
         "Setelah pembayaran dikonfirmasi, status aktif otomatis."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟 Code Discount Saya", callback_data=f"vipdiscount:{code}")],
         [InlineKeyboardButton(text="💳 Bayar Sekarang", callback_data=f"vipbuy:{code}")],
         [InlineKeyboardButton(text="🔙 Kembali", callback_data=f"vipcat:{tier}")],
     ])
@@ -587,28 +588,37 @@ async def vip_all_pay(c):
 @router.callback_query(F.data.startswith("vip_provider:"))
 async def pay(c, state):
     lang = await _lang(c.from_user.id)
-    _, code, provider = c.data.split(":")
+    parts = c.data.split(":")
+    _, code, provider = parts[:3]
+    discount_id = int(parts[3]) if len(parts) > 3 else None
     r = await (await get_pool()).fetchrow(
         "SELECT * FROM vip_packages WHERE code=$1 AND active", code
     )
 
-    result, status = await create_purchase(
-        c.from_user.id,
-        "vip",
-        r["duration_days"],
-        r["price"],
-        provider,
-        c.from_user.full_name,
-        metadata={"vip_package_codes": [code]},
-    )
+    amount = int(r["price"])
+    meta = {"vip_package_codes": [code]}
+    if discount_id:
+        p = await get_pool()
+        d = await p.fetchrow("""SELECT dc.* FROM discount_codes dc
+          JOIN user_discount_codes ud ON ud.discount_id=dc.id
+          WHERE dc.id=$1 AND ud.user_id=$2 AND dc.active AND dc.starts_at<=NOW()
+          AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses""", discount_id, c.from_user.id)
+        if not d or amount < 7000 or d["tier"] not in ("all", str(r["tier"] or "vip")) or (d["package_codes"] and code not in d["package_codes"]):
+            return await c.answer("Code discount tidak valid untuk paket ini.", show_alert=True)
+        off = amount * int(d["discount_value"]) // 100 if d["discount_type"] == "percent" else int(d["discount_value"])
+        amount = max(1000, amount-off)
+        meta.update({"discount_id": discount_id, "discount_code": d["code"], "original_amount": int(r["price"]), "discount_amount": int(r["price"])-amount})
+    result, status = await create_purchase(c.from_user.id, "vip", r["duration_days"], amount, provider, c.from_user.full_name, metadata=meta)
+    if result and discount_id:
+        await (await get_pool()).execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses", discount_id)
     used_provider = provider
     # Automatically try the other configured provider before giving up.
     if not result:
         alternate = "cashi" if provider == "bayargg" else "bayargg"
         if await enabled(alternate):
             result, status = await create_purchase(
-                c.from_user.id, "vip", r["duration_days"], r["price"],
-                alternate, c.from_user.full_name, metadata={"vip_package_codes": [code]},
+                c.from_user.id, "vip", r["duration_days"], amount,
+                alternate, c.from_user.full_name, metadata=meta,
             )
             if result:
                 used_provider = alternate
@@ -622,11 +632,11 @@ async def pay(c, state):
             manual = await p.fetchrow("""
                 INSERT INTO manual_payments(user_id,amount,target_code,target_type,quantity,status)
                 VALUES($1,$2,$3,'vip',$4,'pending') RETURNING id
-            """, c.from_user.id, int(r["price"]), code, int(r["duration_days"]))
+            """, c.from_user.id, amount, code, int(r["duration_days"]))
             manual_id = int(manual["id"])
             await state.set_state(ManualProofState.proof)
-            await state.update_data(kind="vip", quantity=int(r["duration_days"]), amount=int(r["price"]), target_code=code, manual_id=manual_id)
-            caption = (f"🧾 <b>QR MANUAL VIP</b>\n\n{_package_name(r, lang)}\n💰 Rp{int(r['price']):,}\n\n".replace(",", ".")
+            await state.update_data(kind="vip", quantity=int(r["duration_days"]), amount=amount, target_code=code, manual_id=manual_id)
+            caption = (f"🧾 <b>QR MANUAL VIP</b>\n\n{_package_name(r, lang)}\n💰 Rp{amount:,}\n\n".replace(",", ".")
                        + "Kedua provider otomatis gagal. Silakan bayar dengan QR ini lalu kirim screenshot bukti.")
             qr_message = await c.message.answer_photo(qr, caption=caption + f"\n\n🧾 ID: <code>{manual_id}</code>", parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Batal", callback_data=f"mancancel:{manual_id}")]]))
@@ -641,7 +651,7 @@ async def pay(c, state):
 
     text = (
         f'💎 <b>{_package_name(r, lang)}</b>\n'
-        f'💵 Rp{int(r["price"]):,}\n'
+        f'💵 Rp{amount:,}\n'
         f'🏦 {provider.upper()}\n'
         f'🧾 <code>{result["invoice_id"]}</code>\n\n'
         f'{_t(lang, "after_pay")}'
@@ -779,3 +789,108 @@ async def vip_group_member_joined(event: ChatMemberUpdated):
     except Exception:
         import logging
         logging.getLogger(__name__).exception("VIP Group join tracking failed")
+
+
+DISCOUNT_GROUP_URL = "https://t.me/+ezE2-f-YtEo4NzU1"
+
+@router.callback_query(F.data.startswith("vipdiscount:"))
+async def vip_discount_list(c):
+    package_code=c.data.split(":",1)[1]
+    p=await get_pool()
+    pkg=await p.fetchrow("SELECT code,price,tier FROM vip_packages WHERE code=$1 AND active",package_code)
+    if not pkg: return await c.answer("Paket tidak ditemukan.",show_alert=True)
+    if int(pkg["price"])<7000: return await c.answer("Code discount hanya berlaku untuk harga Rp7.000 ke atas.",show_alert=True)
+    rows=await p.fetch("""SELECT dc.* FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
+      WHERE ud.user_id=$1 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses
+      AND dc.min_price<=$2 AND (dc.tier='all' OR dc.tier=$3)
+      AND (cardinality(dc.package_codes)=0 OR $4=ANY(dc.package_codes)) ORDER BY dc.expires_at""",
+      c.from_user.id,int(pkg["price"]),str(pkg["tier"] or "vip"),package_code)
+    if not rows:
+        kb=InlineKeyboardMarkup(inline_keyboard=[
+          [InlineKeyboardButton(text="🎟 Ambil Code Discount",url=DISCOUNT_GROUP_URL)],
+          [InlineKeyboardButton(text="🔙 Kembali",callback_data=f"vip:{package_code}")]])
+        return await c.message.answer("Kamu belum memiliki code discount untuk paket ini. Ambil code di grup, lalu masukkan melalui My Code Discount.",reply_markup=kb)
+    buttons=[]
+    for d in rows:
+        off=int(pkg["price"])*int(d["discount_value"])//100 if d["discount_type"]=="percent" else int(d["discount_value"])
+        final=max(1000,int(pkg["price"])-off)
+        buttons.append([InlineKeyboardButton(text=f"🎟 {d['code']} • Rp{final:,}".replace(",","."),callback_data=f"vipdiscapply:{package_code}:{d['id']}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Kembali",callback_data=f"vip:{package_code}")])
+    await c.message.answer("Pilih code discount yang ingin digunakan:",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.answer()
+
+@router.callback_query(F.data.startswith("vipdiscapply:"))
+async def vip_discount_apply(c):
+    _,package_code,discount_id=c.data.split(":")
+    pkg=await (await get_pool()).fetchrow("SELECT * FROM vip_packages WHERE code=$1 AND active",package_code)
+    d=await (await get_pool()).fetchrow("SELECT dc.* FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id WHERE dc.id=$1 AND ud.user_id=$2 AND dc.active AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses",int(discount_id),c.from_user.id)
+    if not pkg or not d: return await c.answer("Code discount tidak tersedia.",show_alert=True)
+    buttons=[]
+    for provider,label in [("bayargg","⚡ BayarGG"),("cashi","💳 Cashi")]:
+        if await enabled(provider): buttons.append([InlineKeyboardButton(text=label,callback_data=f"vip_provider:{package_code}:{provider}:{discount_id}")])
+    if await enabled("manual"):
+        buttons.append([InlineKeyboardButton(text="🧾 QR Manual",callback_data=f"vip_manual_discount:{package_code}:{discount_id}")])
+    buttons.append([InlineKeyboardButton(text="🔙 Kembali",callback_data=f"vip:{package_code}")])
+    await c.message.answer(f"🎟 Code: {d['code']}\nPilih metode pembayaran. Total diskon akan diterapkan ke invoice.",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.answer()
+
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+class DiscountClaimState(StatesGroup):
+    code=State()
+
+@router.message(F.text.regexp(r"(?i)^my code discount$"))
+@router.message(F.text.regexp(r"(?i)^🎟 my code discount$"))
+async def my_discount_codes(m):
+    rows=await (await get_pool()).fetch("""SELECT dc.code,dc.discount_type,dc.discount_value,dc.expires_at,dc.used_count,dc.max_uses
+      FROM user_discount_codes ud JOIN discount_codes dc ON dc.id=ud.discount_id
+      WHERE ud.user_id=$1 ORDER BY ud.claimed_at DESC LIMIT 50""",m.from_user.id)
+    lines=["🎟 <b>MY CODE DISCOUNT</b>",""]
+    lines += [f"• <code>{html.escape(r['code'])}</code> — {r['discount_value']}{'%' if r['discount_type']=='percent' else ' Rp'} — sampai {r['expires_at']} — {r['used_count']}/{r['max_uses']}" for r in rows]
+    if not rows: lines.append("Kamu belum punya code discount.")
+    kb=InlineKeyboardMarkup(inline_keyboard=[
+      [InlineKeyboardButton(text="➕ Masukkan Code Discount",callback_data="discount:claim")],
+      [InlineKeyboardButton(text="📣 Ambil Code Discount",url=DISCOUNT_GROUP_URL)]])
+    await m.answer("\n".join(lines),parse_mode="HTML",reply_markup=kb)
+
+@router.callback_query(F.data=="discount:claim")
+async def discount_claim_start(c,state:FSMContext):
+    await state.set_state(DiscountClaimState.code)
+    await c.message.answer("Kirim code discount yang kamu dapatkan dari grup.")
+    await c.answer()
+
+@router.message(DiscountClaimState.code)
+async def discount_claim_save(m,state:FSMContext):
+    code=(m.text or "").strip().upper()
+    p=await get_pool()
+    d=await p.fetchrow("SELECT * FROM discount_codes WHERE code=$1 AND active AND starts_at<=NOW() AND expires_at>NOW() AND used_count<max_uses",code)
+    if not d: return await m.answer("❌ Code tidak valid, kedaluwarsa, atau kuota sudah habis.")
+    await p.execute("INSERT INTO user_discount_codes(user_id,discount_id) VALUES($1,$2) ON CONFLICT DO NOTHING",m.from_user.id,d["id"])
+    await state.clear()
+    await m.answer(f"✅ Code discount <code>{html.escape(code)}</code> berhasil ditambahkan.",parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("vip_manual_discount:"))
+async def vip_manual_discount(c,state:FSMContext):
+    from handlers.payments import ManualProofState
+    _,code,discount_id=c.data.split(":")
+    p=await get_pool()
+    r=await p.fetchrow("SELECT * FROM vip_packages WHERE code=$1 AND active",code)
+    d=await p.fetchrow("""SELECT dc.* FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
+      WHERE dc.id=$1 AND ud.user_id=$2 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses""",int(discount_id),c.from_user.id)
+    qr=await p.fetchval("SELECT value FROM settings WHERE key='manual_qr_file_id'")
+    if not r or not d or not qr: return await c.answer("Paket, code discount, atau QR manual tidak tersedia.",show_alert=True)
+    original=int(r["price"])
+    if original<7000: return await c.answer("Diskon hanya berlaku untuk harga Rp7.000 ke atas.",show_alert=True)
+    off=original*int(d["discount_value"])//100 if d["discount_type"]=="percent" else int(d["discount_value"])
+    amount=max(1000,original-off)
+    manual=await p.fetchrow("""INSERT INTO manual_payments(user_id,amount,target_code,target_type,quantity,status,note)
+      VALUES($1,$2,$3,'vip',$4,'pending',$5) RETURNING id""",c.from_user.id,amount,code,int(r["duration_days"]),f"Discount {d['code']} (harga awal {original})")
+    did=int(manual["id"])
+    await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",int(discount_id))
+    await state.set_state(ManualProofState.proof)
+    await state.update_data(kind="vip",quantity=int(r["duration_days"]),amount=amount,target_code=code,manual_id=did)
+    cap=f"🧾 <b>QR MANUAL VIP</b>\n{html.escape(str(r['name']))}\nHarga awal: Rp{original:,}\nCode: <code>{html.escape(str(d['code']))}</code>\nDiskon: Rp{original-amount:,}\n<b>Total: Rp{amount:,}</b>\n\nKirim screenshot bukti pembayaran.".replace(",",".")
+    msg=await c.message.answer_photo(qr,caption=cap+f"\nID: <code>{did}</code>",parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Batal",callback_data=f"mancancel:{did}")]]))
+    await p.execute("UPDATE manual_payments SET qr_message_id=$1 WHERE id=$2",msg.message_id,did)
+    await c.answer()
