@@ -314,6 +314,41 @@ async def init_db():
     WHERE $1::BIGINT <> 0
     ON CONFLICT(user_id) DO UPDATE SET is_admin=TRUE
     """, int(os.getenv("OWNER_ID","0") or 0))
+    await p.execute("""
+    CREATE TABLE IF NOT EXISTS discount_codes(
+      id BIGSERIAL PRIMARY KEY, code TEXT UNIQUE NOT NULL,
+      discount_type TEXT NOT NULL CHECK(discount_type IN ('percent','fixed')),
+      discount_value BIGINT NOT NULL CHECK(discount_value > 0),
+      min_price BIGINT NOT NULL DEFAULT 7000,
+      max_uses INT NOT NULL DEFAULT 10,
+      used_count INT NOT NULL DEFAULT 0,
+      starts_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL,
+      package_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+      tier TEXT NOT NULL DEFAULT 'all' CHECK(tier IN ('all','vip','vvip')),
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_by BIGINT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS user_discount_codes(
+      user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+      discount_id BIGINT NOT NULL REFERENCES discount_codes(id) ON DELETE CASCADE,
+      claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY(user_id,discount_id)
+    );
+    ALTER TABLE manual_payments ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+    INSERT INTO discount_codes(code,discount_type,discount_value,min_price,max_uses,expires_at,package_codes,tier)
+    VALUES
+      ('VIP1HARI20','percent',20,7000,10,NOW()+INTERVAL '365 days',ARRAY['vip_1d'],'vip'),
+      ('VIP4HARI20','percent',20,7000,10,NOW()+INTERVAL '365 days',ARRAY['vip_4d'],'vip'),
+      ('VIP7HARI20','percent',20,7000,10,NOW()+INTERVAL '365 days',ARRAY['vip_7d'],'vip'),
+      ('VIP15HARI20','percent',20,7000,10,NOW()+INTERVAL '365 days',ARRAY['vip_15d'],'vip'),
+      ('VVIP1HARI20','percent',20,7000,10,NOW()+INTERVAL '365 days',ARRAY['vvip_1d'],'vvip'),
+      ('VVIP4HARI20','percent',20,7000,10,NOW()+INTERVAL '365 days',ARRAY['vvip_4d'],'vvip'),
+      ('VVIP7HARI20','percent',20,7000,10,NOW()+INTERVAL '365 days',ARRAY['vvip_7d'],'vvip'),
+      ('VVIP15HARI20','percent',20,7000,10,NOW()+INTERVAL '365 days',ARRAY['vvip_15d'],'vvip')
+    ON CONFLICT(code) DO NOTHING;
+    """)
     await p.fetchval("SELECT 1")
 
 async def execute(q,*a): return await (await get_pool()).execute(q,*a)
