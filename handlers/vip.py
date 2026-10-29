@@ -898,41 +898,66 @@ class DiscountClaimState(StatesGroup):
 @router.message(F.text.regexp(r"(?i)^my code discount$"))
 @router.message(F.text.regexp(r"(?i)^🎟 my code discount$"))
 async def my_discount_codes(m):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟 My Discount Code", callback_data="discount:my")],
+        [InlineKeyboardButton(text="📥 Redeem Code", callback_data="discount:claim")],
+        [InlineKeyboardButton(text="📘 About", callback_data="discount:about"), InlineKeyboardButton(text="📣 Dapatkan Code", url=DISCOUNT_GROUP_URL)],
+        [InlineKeyboardButton(text="🎁 Donasi", callback_data="vipdonate")],
+    ])
+    await m.answer("🎟 <b>CODE DISCOUNT</b>\n\nPilih menu di bawah:", parse_mode="HTML", reply_markup=kb)
+
+@router.callback_query(F.data == "discount:my")
+async def discount_my_list(c):
     p = await get_pool()
     rows = await p.fetch("""SELECT dc.code,dc.discount_type,dc.discount_value,dc.expires_at,dc.used_count,dc.max_uses,
       CASE WHEN dc.expires_at<=NOW() THEN 'expired' WHEN dc.used_count>=dc.max_uses THEN 'full' ELSE 'active' END AS code_status
       FROM user_discount_codes ud JOIN discount_codes dc ON dc.id=ud.discount_id
-      WHERE ud.user_id=$1 ORDER BY ud.claimed_at DESC LIMIT 50""", m.from_user.id)
-    lines = ["🎟 <b>MY CODE DISCOUNT</b>", ""]
+      WHERE ud.user_id=$1 ORDER BY ud.claimed_at DESC LIMIT 50""", c.from_user.id)
+    lines = ["🎟 <b>MY DISCOUNT CODE</b>", ""]
     if rows:
         for r in rows:
-            status = {"expired": "⌛ Kadaluarsa", "full": "⛔ Kuota penggunaan penuh", "active": "✅ Aktif"}[r["code_status"]]
+            status = {"expired": "⌛ Kedaluwarsa", "full": "⛔ Kuota penuh", "active": "✅ Aktif"}[r["code_status"]]
             value = f"{r['discount_value']}%" if r["discount_type"] == "percent" else f"Rp{int(r['discount_value']):,}".replace(",", ".")
-            lines.append(f"• <code>{html.escape(r['code'])}</code> — {value} — {status} — pemakaian {r['used_count']}/{r['max_uses']}")
+            lines.append(f"• <code>{html.escape(r['code'])}</code> — {value} — {status} — {r['used_count']}/{r['max_uses']}")
     else:
-        lines.append("Kamu belum memiliki Code Discount yang berhasil di-redeem.")
-    lines += ["", "📘 <b>Bantuan Code Discount</b>",
-      "1. Tekan <b>Redeem Code</b> lalu kirim kode yang kamu dapatkan dari grup.",
-      "2. Jika berhasil, kode akan masuk ke daftar My Code Discount.",
-      "3. Saat membeli Code Media atau paket VIP/VVIP yang sesuai, pilih tombol Code Discount sebelum membayar.",
-      "4. Diskon hanya berlaku untuk transaksi minimal Rp7.000 dan harus sesuai paket, masa berlaku, serta kuota.",
-      "", "📣 Cara mendapatkan: buka grup Code Discount di bawah dan gunakan kode yang dibagikan admin."]
+        lines.append("Kamu belum memiliki kode diskon. Tekan Redeem Code untuk memasukkan kode dari grup.")
     kb = InlineKeyboardMarkup(inline_keyboard=[
-      [InlineKeyboardButton(text="🎟 Redeem Code", callback_data="discount:claim")],
-      [InlineKeyboardButton(text="📣 Dapatkan Code Discount", url=DISCOUNT_GROUP_URL)],
-      [InlineKeyboardButton(text="🔄 Refresh", callback_data="discount:refresh")]])
-    await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+        [InlineKeyboardButton(text="📥 Redeem Code", callback_data="discount:claim")],
+        [InlineKeyboardButton(text="🔙 Menu Code Discount", callback_data="discount:menu")],
+    ])
+    await c.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=kb)
+    await c.answer()
+
+@router.callback_query(F.data == "discount:menu")
+async def discount_menu_callback(c):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟 My Discount Code", callback_data="discount:my")],
+        [InlineKeyboardButton(text="📥 Redeem Code", callback_data="discount:claim")],
+        [InlineKeyboardButton(text="📘 About", callback_data="discount:about"), InlineKeyboardButton(text="📣 Dapatkan Code", url=DISCOUNT_GROUP_URL)],
+        [InlineKeyboardButton(text="🎁 Donasi", callback_data="vipdonate")],
+    ])
+    await c.message.edit_text("🎟 <b>CODE DISCOUNT</b>\n\nPilih menu di bawah:", parse_mode="HTML", reply_markup=kb)
+    await c.answer()
+
+@router.callback_query(F.data == "discount:about")
+async def discount_about(c):
+    text = ("📘 <b>ABOUT CODE DISCOUNT</b>\n\n"
+            "1. Dapatkan kode dari grup Code Discount.\n"
+            "2. Tekan Redeem Code dan kirim kode tersebut.\n"
+            "3. Saat checkout Code Media atau paket VIP/VVIP yang cocok, pilih Code Discount sebelum membayar.\n"
+            "4. Minimum transaksi Rp7.000. Kode harus masih aktif, belum habis kuota, dan sesuai paket.")
+    await c.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Menu Code Discount", callback_data="discount:menu")]]))
+    await c.answer()
 
 @router.callback_query(F.data == "discount:refresh")
 async def discount_refresh(c):
-    await c.message.delete()
-    # Reuse the same display path without requiring the user to type the menu again.
-    class _MessageProxy:
-        from_user = c.from_user
-        answer = c.message.answer
-    proxy = _MessageProxy()
-    await my_discount_codes(proxy)
-    await c.answer("Daftar Code Discount diperbarui.")
+    await c.message.edit_text("🎟 <b>CODE DISCOUNT</b>\n\nPilih menu di bawah:", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟 My Discount Code", callback_data="discount:my")],
+        [InlineKeyboardButton(text="📥 Redeem Code", callback_data="discount:claim")],
+        [InlineKeyboardButton(text="📘 About", callback_data="discount:about"), InlineKeyboardButton(text="📣 Dapatkan Code", url=DISCOUNT_GROUP_URL)],
+        [InlineKeyboardButton(text="🎁 Donasi", callback_data="vipdonate")],
+    ]))
+    await c.answer("Menu diperbarui.")
 
 @router.callback_query(F.data == "discount:claim")
 async def discount_claim_start(c, state: FSMContext):

@@ -1674,44 +1674,226 @@ async def admin_discounts(c):
  if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
  p=await get_pool()
  rows=await p.fetch("SELECT id,code,discount_type,discount_value,max_uses,used_count,expires_at,active FROM discount_codes ORDER BY id DESC LIMIT 20")
- text="🎟 <b>CODE DISCOUNT</b>\\n\\n"
- text += "\\n".join(f"#{r['id']} <code>{html.escape(r['code'])}</code> • {r['discount_value']}{'%' if r['discount_type']=='percent' else ' Rp'} • {r['used_count']}/{r['max_uses']} • {'Aktif' if r['active'] else 'Nonaktif'} • sampai {r['expires_at']}" for r in rows) or "Belum ada code discount."
- kb=InlineKeyboardMarkup(inline_keyboard=[
+ text="🎟 <b>CODE DISCOUNT</b>\n\n"
+ def _expiry_wib(value):
+  try:
+   from zoneinfo import ZoneInfo
+   return value.astimezone(ZoneInfo("Asia/Jakarta")).strftime("%d-%m-%Y %H:%M WIB")
+  except Exception:
+   return str(value)
+ text += "\n".join(f"#{r['id']} <code>{html.escape(r['code'])}</code> • {r['discount_value']}{'%' if r['discount_type']=='percent' else ' Rp'} • {r['used_count']}/{r['max_uses']} • {'Aktif' if r['active'] else 'Nonaktif'} • sampai {_expiry_wib(r['expires_at'])}" for r in rows) or "Belum ada code discount."
+ rows_kb=[]
+ for r in rows:
+  rows_kb.append([InlineKeyboardButton(text=f"{'⛔ Nonaktifkan' if r['active'] else '✅ Aktifkan'} #{r['id']} {r['code'][:18]}",callback_data=f"adm:discount_toggle:{r['id']}")])
+ rows_kb.extend([
   [InlineKeyboardButton(text='➕ Buat Code Discount',callback_data='adm:discount_create')],
   [InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]])
- await c.message.edit_text(text,parse_mode='HTML',reply_markup=kb)
+ await c.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=rows_kb))
+
+@router.callback_query(F.data.startswith('adm:discount_toggle:'))
+async def admin_discount_toggle(c):
+ if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
+ try: discount_id=int(c.data.rsplit(':',1)[1])
+ except (ValueError,IndexError): return await c.answer('ID kode tidak valid.',show_alert=True)
+ p=await get_pool()
+ row=await p.fetchrow("UPDATE discount_codes SET active=NOT active WHERE id=$1 RETURNING active,code",discount_id)
+ if not row: return await c.answer('Kode tidak ditemukan.',show_alert=True)
+ await admin_discounts(c)
 
 @router.callback_query(F.data == 'adm:discount_create')
-async def admin_discount_create(c,state:FSMContext):
- if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
- await state.set_state(AdminState.discount_create)
- await c.message.answer(
-  "Kirim satu baris dengan format:\\n<code>KODE|percent/fixed|nilai|jam_berlaku|maks_pengguna|all/vip/vvip|paket1,paket2</code>\\n\\n"
-  "Contoh: <code>HEMAT20|percent|20|24|10|vip|vip_1d,vip_4d</code>\\n"
-  "Untuk Code Media berbayar gunakan tier <code>all</code> dan paket <code>media</code> (atau <code>-</code> untuk semua paket). Contoh: <code>MEDIA20|percent|20|24|10|all|media</code>. Minimum harga otomatis Rp7.000.",parse_mode='HTML')
- await c.answer()
+async def admin_discount_create(c: CallbackQuery, state: FSMContext):
+    if not await admin_access(c.from_user.id):
+        return await c.answer('No access', show_alert=True)
+    await state.clear()
+    await state.set_state(AdminState.discount_create)
+    await state.update_data(step='code')
+    await c.message.answer(
+        '🎟 <b>BUAT CODE DISCOUNT</b>\n\n'
+        'Kita isi pelan-pelan, tidak perlu format panjang.\n\n'
+        '1/6 — Ketik nama kode diskon.\nContoh: <code>HEMAT20</code>\n'
+        'Gunakan 3–32 huruf/angka, tanpa spasi.', parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='❌ Batal', callback_data='adm:discount_cancel')]])
+    )
+    await c.answer()
+
+@router.callback_query(F.data == 'adm:discount_cancel')
+async def admin_discount_cancel(c: CallbackQuery, state: FSMContext):
+    if not await admin_access(c.from_user.id):
+        return await c.answer('No access', show_alert=True)
+    await state.clear()
+    await c.message.edit_text('Pembuatan Code Discount dibatalkan.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🎟 Kembali ke Code Discount', callback_data='adm:discounts')]]))
+    await c.answer()
+
+@router.callback_query(F.data.startswith('adm:discount_type:'))
+async def admin_discount_pick_type(c: CallbackQuery, state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('No access', show_alert=True)
+    typ = c.data.rsplit(':', 1)[1]
+    if typ not in ('percent', 'fixed'): return await c.answer('Pilihan tidak valid.', show_alert=True)
+    await state.update_data(discount_type=typ, step='value')
+    prompt = '2/6 — Berapa persen diskonnya? Ketik angka 10–70.' if typ == 'percent' else '2/6 — Berapa nominal potongannya dalam Rupiah? Ketik angka saja.'
+    await c.message.edit_text(prompt, reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='❌ Batal', callback_data='adm:discount_cancel')]]))
+    await c.answer()
+
+@router.callback_query(F.data.startswith('adm:discount_tier:'))
+async def admin_discount_pick_tier(c: CallbackQuery, state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('No access', show_alert=True)
+    tier = c.data.rsplit(':', 1)[1]
+    if tier not in ('all', 'vip', 'vvip'): return await c.answer('Pilihan tidak valid.', show_alert=True)
+    await state.update_data(tier=tier, step='packages')
+    if tier == 'all':
+        package_buttons = [[InlineKeyboardButton(text='🎬 Code Media', callback_data='adm:discount_pkg:media')]]
+    else:
+        prefix = 'vip' if tier == 'vip' else 'vvip'
+        package_buttons = [
+            [InlineKeyboardButton(text='VIP/VVIP 1 Hari' if tier == 'vip' else 'VVIP 1 Hari', callback_data=f'adm:discount_pkg:{prefix}_1d')],
+            [InlineKeyboardButton(text='VIP/VVIP 4 Hari' if tier == 'vip' else 'VVIP 4 Hari', callback_data=f'adm:discount_pkg:{prefix}_4d')],
+            [InlineKeyboardButton(text='VIP/VVIP 7 Hari' if tier == 'vip' else 'VVIP 7 Hari', callback_data=f'adm:discount_pkg:{prefix}_7d')],
+            [InlineKeyboardButton(text='VIP/VVIP 15 Hari' if tier == 'vip' else 'VVIP 15 Hari', callback_data=f'adm:discount_pkg:{prefix}_15d')],
+            [InlineKeyboardButton(text='📦 Semua paket tier ini', callback_data='adm:discount_pkg:all')],
+            [InlineKeyboardButton(text='✍️ Paket lain (manual)', callback_data='adm:discount_pkg:custom')],
+        ]
+    package_buttons.append([InlineKeyboardButton(text='❌ Batal', callback_data='adm:discount_cancel')])
+    await c.message.edit_text('6/6 — Pilih paket yang mendapat diskon:', reply_markup=InlineKeyboardMarkup(inline_keyboard=package_buttons))
+    await c.answer()
+
+@router.callback_query(F.data.startswith('adm:discount_pkg:'))
+async def admin_discount_pick_package(c: CallbackQuery, state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('No access', show_alert=True)
+    choice = c.data.rsplit(':', 1)[1]
+    if choice == 'custom':
+        await state.update_data(step='custom_packages')
+        await c.message.edit_text(
+            'Ketik kode paket dipisahkan koma. Contoh: <code>vip_1d,vip_4d</code>\n'
+            'Untuk Code Media ketik <code>media</code>.', parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='❌ Batal', callback_data='adm:discount_cancel')]])
+        )
+        return await c.answer()
+    if choice == 'all':
+        packages = []
+    elif choice == 'media':
+        packages = ['media']
+    elif re.fullmatch(r'(vip|vvip)_(1d|4d|7d|15d)', choice):
+        packages = [choice]
+    else:
+        return await c.answer('Pilihan paket tidak valid.', show_alert=True)
+    await state.update_data(package_codes=packages)
+    await admin_discount_confirm(c, state)
+
+async def admin_discount_confirm(c: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    packages = data.get('package_codes', [])
+    pkg_label = 'Semua paket yang sesuai' if not packages else ', '.join(packages)
+    type_label = f"{data['value']}%" if data['discount_type'] == 'percent' else f"Rp{int(data['value']):,}".replace(',', '.')
+    tier_label = {'all': 'Semua tier', 'vip': 'VIP', 'vvip': 'VVIP'}.get(data['tier'], data['tier'])
+    await state.update_data(step='confirm')
+    await c.message.edit_text(
+        '🧾 <b>PERIKSA CODE DISCOUNT</b>\n\n'
+        f"Kode: <code>{html.escape(data['code'])}</code>\n"
+        f"Potongan: <b>{type_label}</b>\n"
+        f"Masa berlaku: <b>{data['hours']} jam</b>\n"
+        f"Maksimum pengguna: <b>{data['uses']} orang</b>\n"
+        f"Tier: <b>{tier_label}</b>\nPaket: <b>{html.escape(pkg_label)}</b>\n"
+        'Minimum transaksi: <b>Rp7.000</b>\n\nBuat kode ini?', parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='✅ Buat Code Discount', callback_data='adm:discount_save')],
+            [InlineKeyboardButton(text='❌ Batalkan', callback_data='adm:discount_cancel')]
+        ])
+    )
+
+@router.callback_query(F.data == 'adm:discount_save')
+async def admin_discount_save_button(c: CallbackQuery, state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('No access', show_alert=True)
+    data = await state.get_data()
+    if data.get('step') != 'confirm': return await c.answer('Sesi pembuatan kode tidak ditemukan. Mulai lagi.', show_alert=True)
+    code, typ = data['code'], data['discount_type']
+    value, hours, uses, tier = int(data['value']), int(data['hours']), int(data['uses']), data['tier']
+    packages = data.get('package_codes', [])
+    try:
+        if typ == 'percent' and any(x in {'vip_15d', 'vvip_15d'} for x in packages) and value > 50:
+            return await c.answer('Diskon paket 15 hari maksimal 50%. Mulai ulang dan ubah persentase.', show_alert=True)
+        await (await get_pool()).execute(
+            """INSERT INTO discount_codes(code,discount_type,discount_value,min_price,max_uses,starts_at,expires_at,package_codes,tier,created_by)
+               VALUES($1,$2,$3,7000,$4,NOW(),NOW()+($5::text||' hours')::interval,$6,$7,$8)""",
+            code, typ, value, uses, hours, packages, tier, c.from_user.id
+        )
+    except Exception as e:
+        # Do not leak database internals to the user.
+        return await c.answer('Gagal membuat kode. Mungkin kode sudah pernah digunakan. Coba nama lain.', show_alert=True)
+    await state.clear()
+    await c.message.edit_text(
+        f'✅ <b>Code Discount berhasil dibuat!</b>\n\nKode: <code>{html.escape(code)}</code>\n'
+        f'Masa berlaku: {hours} jam\nMaksimum pengguna: {uses}\nMinimum transaksi: Rp7.000',
+        parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🎟 Kelola Code Discount', callback_data='adm:discounts')]])
+    )
+    await c.answer('Kode berhasil dibuat!')
 
 @router.message(AdminState.discount_create)
-async def admin_discount_save(m,state:FSMContext):
- if not await admin_access(m.from_user.id): return
- parts=[x.strip() for x in (m.text or '').split('|')]
- if len(parts)!=7:
-  return await m.answer('Format belum benar. Kirim ulang 7 bagian dipisah tanda |.')
- code,typ,value,hours,uses,tier,packages=parts
- code=code.upper()
- try:
-  value=int(value); hours=int(hours); uses=int(uses)
-  if not re.fullmatch(r'[A-Z0-9_-]{3,32}',code) or typ not in ('percent','fixed') or value<=0 or hours<=0 or uses<1 or uses>10 or tier not in ('all','vip','vvip'):
-   raise ValueError()
-  if typ=='percent' and (value<10 or value>70): raise ValueError()
-  pkg=[] if packages=='-' else [x.strip() for x in packages.split(',') if x.strip()]
-  if typ=='percent' and any(x in {'vip_15d','vvip_15d'} for x in pkg) and value>50: raise ValueError()
-  await (await get_pool()).execute("""
-   INSERT INTO discount_codes(code,discount_type,discount_value,min_price,max_uses,starts_at,expires_at,package_codes,tier,created_by)
-   VALUES($1,$2,$3,7000,$4,NOW(),NOW()+($5::text||' hours')::interval,$6,$7,$8)
-  """,code,typ,value,uses,hours,pkg,tier,m.from_user.id)
- except Exception:
-  return await m.answer('❌ Data tidak valid atau kode sudah ada. Persentase harus 10–70% (paket 15 hari maksimal 50%), masa berlaku positif, dan batas pengguna 1–10. Coba lagi.')
- await state.clear()
- await m.answer(f'✅ Code <code>{html.escape(code)}</code> dibuat. Berlaku {hours} jam, maksimum {uses} pengguna, minimum transaksi Rp7.000.',parse_mode='HTML',
-  reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🎟 Kelola Code Discount',callback_data='adm:discounts')]]))
+async def admin_discount_save(m: Message, state: FSMContext):
+    if not await admin_access(m.from_user.id):
+        await state.clear()
+        return
+    data = await state.get_data()
+    step = data.get('step')
+    raw = (m.text or '').strip()
+    if raw.lower() in ('/cancel', 'batal', 'cancel'):
+        await state.clear()
+        return await m.answer('Pembuatan Code Discount dibatalkan.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🎟 Code Discount', callback_data='adm:discounts')]]))
+    if step == 'code':
+        code = raw.upper()
+        if not re.fullmatch(r'[A-Z0-9_-]{3,32}', code):
+            return await m.answer('Nama kode tidak valid. Gunakan 3–32 huruf/angka tanpa spasi, contoh HEMAT20.')
+        await state.update_data(code=code, step='type')
+        return await m.answer('2/6 — Pilih jenis potongan:', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='Persentase (%)', callback_data='adm:discount_type:percent')],
+            [InlineKeyboardButton(text='Nominal Rupiah (Rp)', callback_data='adm:discount_type:fixed')],
+            [InlineKeyboardButton(text='❌ Batal', callback_data='adm:discount_cancel')]
+        ]))
+    if step == 'value':
+        try: value = int(raw)
+        except ValueError: return await m.answer('Masukkan angka saja, tanpa titik atau simbol.')
+        typ = data.get('discount_type')
+        if value <= 0 or (typ == 'percent' and not 10 <= value <= 70):
+            return await m.answer('Persentase harus 10–70%. Untuk potongan nominal, masukkan angka Rupiah lebih dari 0.')
+        await state.update_data(value=value, step='hours')
+        return await m.answer('3/6 — Berapa lama kode berlaku? Masukkan jumlah jam. Contoh: 24')
+    if step == 'hours':
+        try: hours = int(raw)
+        except ValueError: return await m.answer('Masukkan jumlah jam dengan angka saja, contoh 24.')
+        if not 1 <= hours <= 8760: return await m.answer('Masa berlaku harus antara 1 sampai 8760 jam.')
+        await state.update_data(hours=hours, step='uses')
+        return await m.answer('4/6 — Maksimum berapa pengguna yang boleh memakai kode? Masukkan angka 1–10.')
+    if step == 'uses':
+        try: uses = int(raw)
+        except ValueError: return await m.answer('Masukkan angka 1–10.')
+        if not 1 <= uses <= 10: return await m.answer('Batas pengguna saat ini 1–10. Masukkan angka yang sesuai.')
+        await state.update_data(uses=uses, step='tier')
+        return await m.answer('5/6 — Pilih jenis bot yang memakai kode ini:', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text='🎫 VIPBot', callback_data='adm:discount_tier:vip')],
+            [InlineKeyboardButton(text='👑 VVIPBot', callback_data='adm:discount_tier:vvip')],
+            [InlineKeyboardButton(text='🌐 Code bot (Media)', callback_data='adm:discount_tier:all')],
+            [InlineKeyboardButton(text='❌ Batal', callback_data='adm:discount_cancel')]
+        ]))
+    if step == 'custom_packages':
+        packages = [x.strip().lower() for x in raw.split(',') if x.strip()]
+        if not packages or any(not re.fullmatch(r'[a-z0-9_-]{1,40}', x) for x in packages):
+            return await m.answer('Format paket tidak valid. Contoh: vip_1d,vip_4d atau media.')
+        await state.update_data(package_codes=packages)
+        # Confirm through a regular message because this step was entered from a message, not a callback.
+        data = await state.get_data()
+        pkg_label = ', '.join(packages)
+        type_label = f"{data['value']}%" if data['discount_type'] == 'percent' else f"Rp{int(data['value']):,}".replace(',', '.')
+        tier_label = {'all': 'Semua tier', 'vip': 'VIP', 'vvip': 'VVIP'}.get(data['tier'], data['tier'])
+        await state.update_data(step='confirm')
+        return await m.answer(
+            '🧾 <b>PERIKSA CODE DISCOUNT</b>\n\n'
+            f"Kode: <code>{html.escape(data['code'])}</code>\nPotongan: <b>{type_label}</b>\n"
+            f"Masa berlaku: <b>{data['hours']} jam</b>\nMaksimum pengguna: <b>{data['uses']} orang</b>\n"
+            f"Tier: <b>{tier_label}</b>\nPaket: <b>{html.escape(pkg_label)}</b>\n"
+            'Minimum transaksi: <b>Rp7.000</b>\n\nBuat kode ini?', parse_mode='HTML',
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text='✅ Buat Code Discount', callback_data='adm:discount_save')],
+                [InlineKeyboardButton(text='❌ Batalkan', callback_data='adm:discount_cancel')]
+            ])
+        )
+    return await m.answer('Tekan tombol yang tersedia untuk melanjutkan, atau ketik /cancel untuk membatalkan.')
