@@ -96,6 +96,7 @@ async def code_info_kb(code,title='Code',lang='id'):
       [InlineKeyboardButton(text=f'📝 {title[:40]}',callback_data=f'getcode:{code}')],
       [InlineKeyboardButton(text='👍 Like',callback_data=f'react:like:{code}'),InlineKeyboardButton(text='👎 Hate',callback_data=f'react:hate:{code}'),InlineKeyboardButton(text=_L(lang,'favorite'),callback_data=f'react:favorite:{code}')],
       [InlineKeyboardButton(text=_L(lang,'open_code'),callback_data=f'getcode:{code}')],
+      [InlineKeyboardButton(text='🎁 Donasi ⭐',callback_data='vipdonate')],
       [InlineKeyboardButton(text=_L(lang,'back'),callback_data='home')]
     ])
 
@@ -449,6 +450,7 @@ async def delivery_kb(code, page, total, done=False, lang='id'):
         InlineKeyboardButton(text='👎 No Hate', callback_data=f'react:hate:{code}'),
         InlineKeyboardButton(text='⭐ Favorit', callback_data=f'react:favorite:{code}')
     ])
+    rows.append([InlineKeyboardButton(text='🎁 Donasi ⭐', callback_data='vipdonate')])
     rows.append([InlineKeyboardButton(text='❌ Batal', callback_data=f'cancelget:{code}')])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

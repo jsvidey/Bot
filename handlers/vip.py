@@ -5,6 +5,7 @@ from database import get_pool
 from utils.payments import create_purchase, qr_bytes, enabled
 from utils.callback_loading import loading
 from utils.i18n import get_lang, translate
+from config import ADMIN_IDS
 
 router = Router()
 
@@ -446,35 +447,73 @@ async def vip_about(c):
     await c.answer()
 
 
-@router.callback_query(F.data == "vipdonate")
-async def vip_donate(c):
-    lang = await _lang(c.from_user.id)
-    text = (
-        "❤️‍🔥 <b>Dukung Kami dengan Telegram Stars</b>\n\n"
-        "25 ⭐ — Paling ringan\n50 ⭐ — Dukungan dasar\n75 ⭐ — Dukungan sedang\n100 ⭐ — Dukungan maksimal\n\n"
-        "Setiap Star yang Anda berikan memberi kami semangat untuk terus berinovasi."
-        if lang == "id" else
-        "❤️‍🔥 <b>Support Us with Telegram Stars</b>\n\n"
-        "25 ⭐ — Small support\n50 ⭐ — Basic support\n75 ⭐ — Medium support\n100 ⭐ — Maximum support\n\n"
-        "Every Star you give motivates us to keep innovating."
+async def _donation_menu_text(lang: str) -> str:
+    if lang == "id":
+        return (
+            "🎁 <b>DONASI TELEGRAM STARS</b>\n\n"
+            "Terima kasih sudah mendukung pengembangan bot. Pilih jumlah Stars untuk berdonasi ke bot.\n\n"
+            "⭐ 25 Stars — Dukungan ringan\n"
+            "⭐ 50 Stars — Dukungan standar\n"
+            "⭐ 75 Stars — Dukungan sedang\n"
+            "⭐ 100 Stars — Dukungan ekstra\n\n"
+            "Untuk mengirim hadiah atau berdonasi langsung kepada admin, tekan tombol hadiah di bawah."
+        )
+    return (
+        "🎁 <b>TELEGRAM STARS DONATION</b>\n\n"
+        "Thank you for supporting the bot. Choose a Stars amount to donate to the bot.\n\n"
+        "⭐ 25 Stars — Small support\n⭐ 50 Stars — Standard support\n"
+        "⭐ 75 Stars — Medium support\n⭐ 100 Stars — Extra support\n\n"
+        "To send a gift or donate directly to the admin, use the gift button below."
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="25 ⭐️", callback_data="vg:stars:25"), InlineKeyboardButton(text="50 ⭐️", callback_data="vg:stars:50")],
-        [InlineKeyboardButton(text="75 🌟", callback_data="vg:stars:75"), InlineKeyboardButton(text="100 💫", callback_data="vg:stars:100")],
-        [_vipg_back(lang)],
+
+
+def _donation_kb(lang: str, back_callback: str = "buy_vip"):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="25 ⭐", callback_data="vg:stars:25"), InlineKeyboardButton(text="50 ⭐", callback_data="vg:stars:50")],
+        [InlineKeyboardButton(text="75 ⭐", callback_data="vg:stars:75"), InlineKeyboardButton(text="100 ⭐", callback_data="vg:stars:100")],
+        [InlineKeyboardButton(text="🎁 Hadiah / Donasi ke @Jsshowadmin" if lang == "id" else "🎁 Gift / Donate to @Jsshowadmin", url="https://t.me/Jsshowadmin")],
+        [InlineKeyboardButton(text="🔙 Kembali" if lang == "id" else "🔙 Back", callback_data=back_callback)],
     ])
-    await c.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-    await c.answer()
+
+
+async def _show_donation_menu(target, lang: str, edit: bool = False, back_callback: str = "buy_vip"):
+    text = await _donation_menu_text(lang)
+    kb = _donation_kb(lang, back_callback)
+    if edit:
+        await target.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await target.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data == "vipdonate")
+async def vip_donate(c: CallbackQuery):
+    lang = await _lang(c.from_user.id)
+    try:
+        await _show_donation_menu(c.message, lang, edit=True, back_callback="home")
+    except Exception:
+        await _show_donation_menu(c.message, lang, edit=False, back_callback="home")
+    await c.answer("Pilih jumlah Stars atau hadiah untuk admin." if lang == "id" else "Choose a Stars amount or a gift for the admin.")
+
+
+@router.message(F.chat.type == "private", F.text.in_({"🎁 Donasi", "🎁 Donate"}))
+async def donation_menu_message(m: Message):
+    lang = await _lang(m.from_user.id)
+    await _show_donation_menu(m, lang, edit=False, back_callback="home")
 
 
 @router.callback_query(F.data.startswith("vg:stars:"))
-async def vipg_stars(c):
-    amount = int(c.data.rsplit(":", 1)[1])
+async def vipg_stars(c: CallbackQuery):
+    try:
+        amount = int(c.data.rsplit(":", 1)[1])
+    except (TypeError, ValueError):
+        return await c.answer("Jumlah Stars tidak valid.", show_alert=True)
+    if amount not in {25, 50, 75, 100}:
+        return await c.answer("Jumlah Stars tidak tersedia.", show_alert=True)
     lang = await _lang(c.from_user.id)
     await c.answer()
     await c.message.answer_invoice(
-        title=f"Support bot with {amount} Telegram Stars"[:32],
-        description=("Dukungan untuk pengembangan bot" if lang == "id" else "Support the development of this bot"),
+        title=f"Support bot with {amount} Stars"[:32],
+        description=("Donasi untuk pengembangan bot" if lang == "id" else "Support the development of this bot"),
         payload=f"vip_donation_{amount}_{c.from_user.id}",
         provider_token="",
         currency="XTR",
@@ -482,24 +521,44 @@ async def vipg_stars(c):
     )
 
 
-@router.pre_checkout_query()
+@router.pre_checkout_query(F.invoice_payload.startswith("vip_donation_"))
 async def vipg_stars_precheckout(q: PreCheckoutQuery):
-    if str(q.invoice_payload or "").startswith("vip_donation_") and q.currency == "XTR":
-        await q.answer(ok=True)
-    else:
-        await q.answer(ok=False, error_message="Invalid donation payment.")
+    try:
+        payload = str(q.invoice_payload or "").split("_")
+        valid = len(payload) == 4 and int(payload[2]) in {25, 50, 75, 100} and int(payload[3]) > 0 and q.currency == "XTR" and int(q.total_amount) == int(payload[2])
+    except (TypeError, ValueError):
+        valid = False
+    await q.answer(ok=valid, error_message=None if valid else "Invalid donation payment.")
 
 
-@router.message(F.successful_payment)
+@router.message(F.successful_payment, F.successful_payment.invoice_payload.startswith("vip_donation_"))
 async def vipg_stars_success(m: Message):
     payment = m.successful_payment
-    if not payment or not str(payment.invoice_payload or "").startswith("vip_donation_"):
+    if not payment:
+        return
+    try:
+        payload = str(payment.invoice_payload or "").split("_")
+        amount = int(payload[2])
+        payer_id = int(payload[3])
+        if len(payload) != 4 or payer_id != int(m.from_user.id) or amount not in {25, 50, 75, 100} or payment.currency != "XTR" or int(payment.total_amount) != amount:
+            return await m.answer("⚠️ Pembayaran donasi tidak dapat diverifikasi. Hubungi admin." if await _lang(m.from_user.id) == "id" else "⚠️ Donation payment could not be verified. Contact the admin.")
+    except (TypeError, ValueError, IndexError):
         return
     lang = await _lang(m.from_user.id)
     await m.answer(
-        "❤️ Terima kasih atas dukungan Telegram Stars Anda!" if lang == "id" else
-        "❤️ Thank you for supporting us with Telegram Stars!"
+        f"❤️ Terima kasih! Donasi {amount} ⭐ berhasil diterima oleh bot. Untuk hadiah langsung ke admin, hubungi @Jsshowadmin." if lang == "id" else
+        f"❤️ Thank you! Your {amount} ⭐ donation was received by the bot. For a direct gift to the admin, contact @Jsshowadmin.",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎁 Hadiah ke @Jsshowadmin" if lang == "id" else "🎁 Gift to @Jsshowadmin", url="https://t.me/Jsshowadmin")]])
     )
+    # Notify configured bot admins about the completed donation.
+    username = f"@{m.from_user.username}" if m.from_user.username else "(tanpa username)"
+    notice = (f"🌟 <b>Donasi Telegram Stars berhasil</b>\n\nPengguna: {html.escape(m.from_user.full_name or str(m.from_user.id))} ({html.escape(username)})\nUser ID: <code>{m.from_user.id}</code>\nJumlah: <b>{amount} ⭐</b>\nTelegram charge ID: <code>{html.escape(str(payment.telegram_payment_charge_id))}</code>")
+    for admin_id in set(ADMIN_IDS):
+        try:
+            await m.bot.send_message(int(admin_id), notice, parse_mode="HTML")
+        except Exception:
+            pass
+
 
 @router.callback_query(F.data.startswith("vipsome"))
 async def vip_some(c):
@@ -541,11 +600,6 @@ async def vip_selected_pay(c):
     await c.answer()
     if data: await c.message.answer_photo(BufferedInputFile(data,filename="vip.png"),caption=text,parse_mode="HTML",reply_markup=kb)
     else: await c.message.answer(text,parse_mode="HTML",reply_markup=kb)
-
-@router.callback_query(F.data == "vipdonate")
-async def vip_donate(c):
-    await c.message.edit_text("🎁 <b>Donasi</b>\n\nTerima kasih telah mendukung pengembangan bot. Untuk informasi donasi, silakan hubungi admin bot.",parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💬 Chat Admin",callback_data="adm:chat")],[InlineKeyboardButton(text="🔙 Kembali",callback_data="buy_vip")]]))
-    await c.answer()
 
 @router.callback_query(F.data == "vipall")
 async def vip_all(c):
