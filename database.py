@@ -330,6 +330,25 @@ async def init_db():
       created_by BIGINT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    -- Migrate older installations where discount_codes already existed with
+    -- a partial/legacy schema. CREATE TABLE IF NOT EXISTS alone does not add
+    -- columns to an existing table, which makes the admin INSERT fail.
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS min_price BIGINT NOT NULL DEFAULT 7000;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS max_uses INT NOT NULL DEFAULT 10;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS used_count INT NOT NULL DEFAULT 0;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS starts_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS package_codes TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'all';
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS created_by BIGINT;
+    ALTER TABLE discount_codes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    -- Legacy rows may not have an expiry. Keep them visible but expired rather
+    -- than allowing a NULL expiry to break discount checks.
+    UPDATE discount_codes SET expires_at = NOW() WHERE expires_at IS NULL;
+    ALTER TABLE discount_codes ALTER COLUMN expires_at SET DEFAULT (NOW() + INTERVAL '24 hours');
+    ALTER TABLE discount_codes ALTER COLUMN expires_at SET NOT NULL;
+
     CREATE TABLE IF NOT EXISTS user_discount_codes(
       user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
       discount_id BIGINT NOT NULL REFERENCES discount_codes(id) ON DELETE CASCADE,
