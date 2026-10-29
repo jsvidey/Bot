@@ -363,12 +363,12 @@ async def finalize_purchase(invoice,status_amount=None):
             code = str(meta.get("code") or "").strip()
             if code:
                 keyboard = InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="📂 Open Media", callback_data=f"openpaid:{code}")],
+                    [InlineKeyboardButton(text="📂 Buka Media", callback_data=f"openpaid:{code}")],
                     [InlineKeyboardButton(text="✖️ Tutup notifikasi", callback_data="dismissnotice")]
                 ])
                 await bot.send_message(
                     uid,
-                    f'✅ <b>Payment successful</b>\n\n🔑 Code: <code>{code}</code>\n📥 Payment successful and code access already active.\n\n⚠️ Demi keamanan dan kenyamanan, segera simpan seluruh media setelah diterima.',
+                    f'✅ <b>Pembelian Code Berhasil!</b>\n\n🔑 Code: <code>{html.escape(code)}</code>\n📥 Akses media sudah aktif. Tekan tombol di bawah untuk membuka media yang sesuai dengan code ini.',
                     parse_mode="HTML",
                     reply_markup=keyboard,
                 )
@@ -387,7 +387,7 @@ async def finalize_purchase(invoice,status_amount=None):
                     )
                 else:
                     package_rows = await (await get_pool()).fetch(
-                        "SELECT code,name,link_url FROM vip_packages WHERE code=ANY($1::text[]) ORDER BY price DESC",
+                        "SELECT code,name,link_url,tier FROM vip_packages WHERE code=ANY($1::text[]) ORDER BY price DESC",
                         package_codes,
                     )
             from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -460,18 +460,21 @@ async def finalize_purchase(invoice,status_amount=None):
                             parse_mode="HTML",
                         )
             else:
-                lines = ["💎 <b>Pembayaran VIP berhasil!</b>", f"Durasi akses bot: <b>{int(qty)} hari</b>.", ""]
+                is_vvip = any(str(package.get("tier") or "").lower() == "vvip" for package in package_rows)
+                heading = "🔥 Pembelian VVIP Bot Berhasil!" if is_vvip else "💎 Pembelian VIP Bot Berhasil!"
+                lines = [f"<b>{heading}</b>", "✅ Pembayaran berhasil dan akses bot sudah diaktifkan.",
+                         f"⏳ Durasi akses: <b>{int(qty)} hari</b>.", ""]
                 link_buttons = []
                 for package in package_rows:
-                    lines.append(f"📦 {html.escape(str(package['name']))}")
+                    lines.append(f"📦 Paket: <b>{html.escape(str(package['name']))}</b>")
                     link = str(package['link_url'] or '').strip()
                     if link.startswith(('https://t.me/', 'https://telegram.me/')):
                         link_buttons.append([InlineKeyboardButton(text=f"🔗 Buka {str(package['name'])[:45]}", url=link)])
-                    else:
+                    elif is_group_vip:
                         lines.append("⚠️ Link paket belum dipasang admin. Silakan hubungi admin.")
                 if not package_rows:
-                    lines.append("Pembelian sudah aktif. Silakan buka menu VIP untuk detail paket.")
-                await bot.send_message(uid, "\n".join(lines), parse_mode="HTML",
+                    lines.append("Pembelian sudah aktif. Silakan buka menu VIP Bot untuk detail paket.")
+                await bot.send_message(uid, "\\n".join(lines), parse_mode="HTML",
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=link_buttons) if link_buttons else None)
 
         else:
