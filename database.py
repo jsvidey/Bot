@@ -336,6 +336,11 @@ async def init_db():
       claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY(user_id,discount_id)
     );
+    CREATE TABLE IF NOT EXISTS discount_code_archive(
+      code TEXT PRIMARY KEY,
+      status TEXT NOT NULL CHECK(status IN ('expired','full','used')),
+      archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     ALTER TABLE manual_payments ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
     INSERT INTO discount_codes(code,discount_type,discount_value,min_price,max_uses,expires_at,package_codes,tier)
     VALUES
