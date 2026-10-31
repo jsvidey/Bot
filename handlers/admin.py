@@ -56,7 +56,7 @@ async def admin_command(m):
 class AdminState(StatesGroup):
     broadcast=State(); edit_code=State(); edit_title=State(); edit_tags=State(); edit_price=State(); user_action=State(); move=State(); grant_open_user=State(); grant_open_code=State(); role_user=State()
     b2_name=State(); b2_region=State(); b2_bucket=State(); b2_key_id=State(); b2_app_key=State(); vip_channel_value=State()
-    setting_value=State(); package_value=State(); package_add=State(); vipg_package_add=State(); vipg_package_edit=State(); edit_option=State(); welcome_id=State(); welcome_en=State(); server_name=State(); discount_create=State(); discount_edit=State()
+    setting_value=State(); package_value=State(); package_add=State(); vipg_package_add=State(); vipg_package_edit=State(); edit_option=State(); welcome_id=State(); welcome_en=State(); server_name=State(); discount_create=State(); discount_edit=State(); access_channel_edit=State()
 
 def admin(uid): return is_config_admin(uid)
 async def val(key): return str(await (await get_pool()).fetchval("SELECT value FROM settings WHERE key=$1",key) or "off")
@@ -76,6 +76,7 @@ def kb():
   [InlineKeyboardButton(text='💎 Setting VIP Bot',callback_data='adm:packages'),InlineKeyboardButton(text='💎 Setting VIP Group /vip',callback_data='adm:vipgpackages')],
   [InlineKeyboardButton(text='🎟 Code Discount',callback_data='adm:discounts')],
    [InlineKeyboardButton(text='📡 Force Join',callback_data='adm:channels')],
+  [InlineKeyboardButton(text='🔐 Wajib Join per Code',callback_data='adm:accesschannels')],
   [InlineKeyboardButton(text='🔎 Dashboard Lengkap',callback_data='adm:overview')],
   [InlineKeyboardButton(text='🧾 Transaksi',callback_data='adm:transactions'),InlineKeyboardButton(text='🔐 User Security',callback_data='adm:security')],
   [InlineKeyboardButton(text='🩺 System Health',callback_data='adm:health'),InlineKeyboardButton(text='🚨 Bot Errors',callback_data='adm:errors')],
@@ -779,7 +780,7 @@ async def admin_code_field(c, state: FSMContext):
         'tags': (AdminState.edit_tags, '🏷 Kirim tag baru, pisahkan dengan spasi.'),
         'price': (AdminState.edit_price, f'💰 Kirim harga baru (Rp{PAID_CODE_MIN_IDR:,} - Rp{PAID_CODE_MAX_IDR:,}).'.replace(',', '.')),
         'access': (AdminState.edit_option, 'Kirim mode akses: all / free / vip.'),
-        'server': (AdminState.edit_option, 'Kirim server: 1 / 2 / 3 atau nama server.'),
+        'server': (AdminState.edit_option, 'Kirim nomor server yang akan dipilih (1–10).'),
         'auto_delete': (AdminState.edit_option, 'Auto-delete? Kirim ya / tidak.'),
         'allow_forward': (AdminState.edit_option, 'Izinkan forward? Kirim ya / tidak.'),
         'watermark_enabled': (AdminState.edit_option, 'Watermark? Kirim ya / tidak.'),
@@ -871,9 +872,11 @@ async def admin_edit_option(m, state: FSMContext):
         if raw not in {'all','free','vip'}: return await m.answer('Pilih all / free / vip.')
         await p.execute("UPDATE files SET access_mode=$1,price_idr=CASE WHEN $1='free' THEN 0 ELSE price_idr END,code_value_idr=CASE WHEN $1='free' THEN 0 ELSE code_value_idr END WHERE code=$2", raw, code)
     elif field == 'server':
-        servers = {'1':'Server 1 — Media 5th ke bawah','2':'Server 2 — Media SMP','3':'Server 3 — Tante/Janda/STW', 'server 1':'Server 1 — Media 5th ke bawah','server 2':'Server 2 — Media SMP','server 3':'Server 3 — Tante/Janda/STW'}
-        if raw not in servers: return await m.answer('Pilih 1, 2, atau 3.')
-        await p.execute('UPDATE files SET server_name=$1 WHERE code=$2', servers[raw], code)
+        try: server_no=int(raw)
+        except Exception: return await m.answer('Kirim nomor server 1–10.')
+        server=await p.fetchrow('SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE',server_no)
+        if not server: return await m.answer('Server tidak tersedia atau nonaktif.')
+        await p.execute('UPDATE files SET server_name=$1 WHERE code=$2', f"Server {server_no} — {server['name']}", code)
     else:
         if raw not in {'ya','tidak','yes','no','on','off','true','false'}: return await m.answer('Pilih ya atau tidak.')
         value = raw in {'ya','yes','on','true'}
@@ -1653,6 +1656,57 @@ async def admin_server_name_save(m: Message,state: FSMContext):
     await p.execute("UPDATE server_categories SET name=$1,enabled=TRUE,updated_at=NOW() WHERE server_no=$2",name,no)
     await state.clear()
     await m.answer(f"✅ Server {no} sekarang bernama <b>{html.escape(name)}</b>.",parse_mode="HTML")
+
+@router.callback_query(F.data == 'adm:accesschannels')
+async def admin_access_channels(c: CallbackQuery):
+    if not await admin_access(c.from_user.id): return await c.answer('Admin only.',show_alert=True)
+    p=await get_pool(); rows=await p.fetch('SELECT id,title,chat_id,join_url,enabled FROM access_join_channels ORDER BY id')
+    lines=['🔐 <b>WAJIB JOIN PER CODE</b>','Atur minimal 5 slot channel/grup. Pilih slot untuk mengisi atau mengedit.']
+    buttons=[]
+    for r in rows:
+        status='✅' if r['enabled'] and int(r['chat_id'] or 0)!=0 else '▫️'
+        lines.append(f"{status} {html.escape(r['title'])} • <code>{r['chat_id']}</code>")
+        buttons.append([InlineKeyboardButton(text=f"{status} {str(r['title'])[:28]}",callback_data=f"admjoin:edit:{r['id']}"),InlineKeyboardButton(text='Hapus',callback_data=f"admjoin:delete:{r['id']}")])
+    buttons.append([InlineKeyboardButton(text='➕ Tambah Slot',callback_data='admjoin:add')])
+    buttons.append([InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')])
+    await c.message.edit_text('\n'.join(lines),parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons)); await c.answer()
+
+@router.callback_query(F.data.startswith('admjoin:edit:'))
+async def admin_access_channel_edit(c: CallbackQuery,state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('Admin only.',show_alert=True)
+    cid=int(c.data.rsplit(':',1)[1]); p=await get_pool(); row=await p.fetchrow('SELECT * FROM access_join_channels WHERE id=$1',cid)
+    if not row: return await c.answer('Slot tidak ditemukan.',show_alert=True)
+    await state.set_state(AdminState.access_channel_edit); await state.update_data(access_channel_id=cid)
+    await c.message.answer('Kirim dengan format berikut (pisahkan menggunakan |):\n<b>Nama | Chat ID | Link Join</b>\nContoh: Updates Channel | -1001234567890 | https://t.me/namachannel\nBot harus menjadi admin di channel/grup tersebut.',parse_mode='HTML')
+    await c.answer()
+
+@router.callback_query(F.data == 'admjoin:add')
+async def admin_access_channel_add(c: CallbackQuery,state: FSMContext):
+    if not await admin_access(c.from_user.id): return await c.answer('Admin only.',show_alert=True)
+    p=await get_pool(); row=await p.fetchrow("INSERT INTO access_join_channels(title,chat_id,join_url,enabled) VALUES('Channel/Group Baru',0,'',FALSE) RETURNING id")
+    await state.set_state(AdminState.access_channel_edit); await state.update_data(access_channel_id=int(row['id']))
+    await c.message.answer('Kirim: <b>Nama | Chat ID | Link Join</b>\nContoh: Channel Update | -1001234567890 | https://t.me/namachannel',parse_mode='HTML'); await c.answer()
+
+@router.message(AdminState.access_channel_edit)
+async def admin_access_channel_save(m: Message,state: FSMContext):
+    if not await admin_access(m.from_user.id): await state.clear(); return
+    parts=[x.strip() for x in (m.text or '').split('|',2)]
+    if len(parts)<2 or not parts[0]: return await m.answer('Format salah. Gunakan: Nama | Chat ID | Link Join')
+    try: chat_id=int(parts[1])
+    except Exception: return await m.answer('Chat ID harus berupa angka, misalnya -1001234567890.')
+    if chat_id==0: return await m.answer('Chat ID tidak boleh 0.')
+    title=parts[0][:80]; url=parts[2] if len(parts)>2 else ''
+    if url and not url.startswith(('https://t.me/','http://t.me/','https://telegram.me/')): return await m.answer('Link join harus berupa link Telegram.')
+    d=await state.get_data(); cid=int(d.get('access_channel_id') or 0)
+    await (await get_pool()).execute('UPDATE access_join_channels SET title=$1,chat_id=$2,join_url=$3,enabled=TRUE WHERE id=$4',title,chat_id,url,cid)
+    await state.clear(); await m.answer('✅ Channel/grup tersimpan.',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🔐 Buka Pengaturan Wajib Join',callback_data='adm:accesschannels')]]))
+
+@router.callback_query(F.data.startswith('admjoin:delete:'))
+async def admin_access_channel_delete(c):
+    if not await admin_access(c.from_user.id): return await c.answer('Admin only.',show_alert=True)
+    cid=int(c.data.rsplit(':',1)[1]); p=await get_pool()
+    await p.execute("UPDATE access_join_channels SET title='Slot Channel/Group '||id,chat_id=0,join_url='',enabled=FALSE WHERE id=$1",cid)
+    await c.answer('Slot dikosongkan.'); await admin_access_channels(c)
 
 @router.callback_query(F.data == "admin_home")
 async def admin_home_callback(c: CallbackQuery):

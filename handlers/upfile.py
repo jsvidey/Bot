@@ -411,6 +411,7 @@ def _config_keyboard(d):
         [InlineKeyboardButton(text=f"💧 Watermark: {'ON' if d.get('watermark_enabled') else 'OFF'}", callback_data='upcfg:watermark')],
         [InlineKeyboardButton(text=f"🖼 Preview: {preview_label}", callback_data='upcfg:preview')],
         [InlineKeyboardButton(text='👁 Lihat Preview', callback_data='upcfg:preview_show')],
+        [InlineKeyboardButton(text=f"📢 Wajib Join: {len(d.get('required_join_channels') or [])} channel/grup", callback_data='upcfg:join')],
         [InlineKeyboardButton(text='✅ SIMPAN & PUBLIKASIKAN', callback_data='upcfg:save')],
         [InlineKeyboardButton(text='❌ Batalkan Upload', callback_data='up_cancel')],
     ])
@@ -432,7 +433,8 @@ async def show_config_panel(target, state):
         f"💰 Harga: <b>{'GRATIS' if price == 0 else 'Rp'+format(price, ',').replace(',', '.')}</b>\n"
         f"🗂 Server: <b>{html.escape(str(d.get('server_name') or 'Belum dipilih'))}</b>\n"
         f"🔐 Akses: <b>{html.escape(str(d.get('access_mode') or 'all').upper())}</b>\n"
-        f"🖼 Preview gratis: <b>{len(preview)} item</b>"
+        f"🖼 Preview gratis: <b>{len(preview)} item</b>\n"
+        f"📢 Join group: <b>{len(d.get('required_join_channels') or [])} channel/grup</b>"
     )
     await state.set_state(None)
     try:
@@ -479,6 +481,16 @@ async def config_action(c: CallbackQuery, state: FSMContext):
         key = {'delete':'auto_delete','forward':'allow_forward','watermark':'watermark_enabled'}[action]
         await state.update_data(**{key: not bool(d.get(key, action == 'forward'))})
         return await show_config_panel(c, state)
+    if action == 'join':
+        p=await get_pool()
+        channels=await p.fetch("SELECT id,title,chat_id,join_url FROM access_join_channels WHERE enabled=TRUE ORDER BY id")
+        selected=set(int(x) for x in (d.get('required_join_channels') or []))
+        rows=[]
+        for ch in channels:
+            mark='✅' if int(ch['id']) in selected else '▫️'
+            rows.append([InlineKeyboardButton(text=f"{mark} {ch['title'][:35]}",callback_data=f"upcfgjoin:{ch['id']}")])
+        rows.append([InlineKeyboardButton(text='↩️ Kembali',callback_data='upcfg:back')])
+        return await c.message.edit_text('📢 <b>PILIH WAJIB JOIN</b>\nPilih satu atau beberapa channel/grup yang harus diikuti sebelum media dibuka.',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
     if action == 'preview':
         preview = list(d.get('preview_media') or [])
         return await c.message.edit_text(f'🖼 <b>PENGATURAN PREVIEW</b>\n\nSaat ini: <b>{len(preview)} item</b>.\nPilih tambah, ganti seluruh preview, atau hapus.', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -506,6 +518,24 @@ async def config_action(c: CallbackQuery, state: FSMContext):
         await create_code(c.message, state, int(d.get('price') or 0), uid=c.from_user.id, username=c.from_user.username, full_name=c.from_user.full_name)
     elif action == 'back':
         await show_config_panel(c, state)
+
+@router.callback_query(F.data.startswith('upcfgjoin:'))
+async def config_join_toggle(c: CallbackQuery,state: FSMContext):
+    if not await _config_guard(c): return
+    try: cid=int(c.data.split(':',1)[1])
+    except Exception: return await c.answer('Pilihan tidak valid.',show_alert=True)
+    d=await state.get_data(); selected=set(int(x) for x in (d.get('required_join_channels') or []))
+    if cid in selected: selected.remove(cid)
+    else: selected.add(cid)
+    await state.update_data(required_join_channels=sorted(selected))
+    await c.answer('Pilihan diperbarui.')
+    p=await get_pool(); channels=await p.fetch("SELECT id,title FROM access_join_channels WHERE enabled=TRUE ORDER BY id")
+    rows=[]
+    for ch in channels:
+        mark='✅' if int(ch['id']) in selected else '▫️'
+        rows.append([InlineKeyboardButton(text=f"{mark} {ch['title'][:35]}",callback_data=f"upcfgjoin:{ch['id']}")])
+    rows.append([InlineKeyboardButton(text='↩️ Kembali',callback_data='upcfg:back')])
+    await c.message.edit_text(f"📢 <b>PILIH WAJIB JOIN</b>\nTerpilih: {len(selected)} channel/grup",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
 @router.callback_query(F.data == 'upcfgpricefree')
 async def config_price_free(c: CallbackQuery, state: FSMContext):
@@ -651,11 +681,11 @@ async def create_code(m,state,price:int, uid=None, username=None, full_name=None
         review_items = review_items[:1]
     await p.execute("""INSERT INTO files
         (code,review_code,code_type,owner_id,title,media,review_media,media_count,photo_count,video_count,document_count,audio_count,
-         code_value_idr,price_idr,tags,server_name,access_mode,auto_delete,allow_forward,watermark_enabled,active)
-        VALUES($1,$2,'media',$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16,$17,$18,TRUE)""",
+         code_value_idr,price_idr,tags,server_name,access_mode,auto_delete,allow_forward,watermark_enabled,required_join_channels,active)
+        VALUES($1,$2,'media',$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16,$17,$18,$19,TRUE)""",
         code, review_code, uid, title[:150], json.dumps(media,ensure_ascii=False),
         json.dumps(review_items,ensure_ascii=False), len(media), counts[0], counts[1], counts[2],
-        sum(x.get('type')=='audio' for x in media), price, tags, server_name, access_mode, auto_delete, allow_forward, watermark_enabled)
+        sum(x.get('type')=='audio' for x in media), price, tags, server_name, access_mode, auto_delete, allow_forward, watermark_enabled, list(d.get('required_join_channels') or []))
 
     await state.clear()
     tagtext=' '.join('#'+html.escape(t) for t in tags) or '-'

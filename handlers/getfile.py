@@ -113,16 +113,17 @@ async def has_permanent_access(uid,code):
     return bool(await p.fetchval("""SELECT 1 FROM unlock_transactions WHERE user_id=$1 AND code=$2
         AND payment_type='admin' AND expires_at>NOW() ORDER BY id DESC LIMIT 1""",uid,code))
 
-async def show(m,code):
+async def show(m,code,user_id=None):
+    uid=int(user_id or m.from_user.id)
     f=await get_file(code)
-    if not f:return await m.answer(_L(await _lang(m.from_user.id),'invalid_code'))
+    if not f:return await m.answer(_L(await _lang(uid),'invalid_code'))
     p=await get_pool()
     canonical=str(f['code'])
     await p.execute("UPDATE files SET views=views+1 WHERE code=$1", canonical)
     stats=await p.fetchrow("""SELECT views,likes,hates,favorites FROM files WHERE id=$1""",f['id'])
     price=int(f['price_idr'] or 0)
     paid=f"💰 Harga: <b>{fmt(price)}</b>" if price else "🆓 FREE CODE"
-    lang=await _lang(m.from_user.id)
+    lang=await _lang(uid)
     review_code = str(f['review_code'] or '')
     if review_code and str(code).lower() in {review_code.lower(), canonical.lower()}:
         # Review is intentionally free. Show one review/preview item plus a clear
@@ -195,24 +196,65 @@ async def show(m,code):
       f"Bagikan code ini ke teman-teman untuk membuka media ini.",
       parse_mode='HTML',reply_markup=await code_info_kb(canonical,f['title'] or 'Code',lang))
 
+async def show_server_catalog(target):
+    p=await get_pool()
+    rows=await p.fetch("""SELECT s.server_no,s.name,COUNT(f.id)::int AS file_count
+      FROM server_categories s LEFT JOIN files f ON f.active=TRUE
+      AND f.server_name LIKE ('Server '||s.server_no||' —%')
+      WHERE s.enabled=TRUE GROUP BY s.server_no,s.name ORDER BY s.server_no""")
+    buttons=[]
+    for r in rows:
+        if int(r['file_count'] or 0):
+            buttons.append([InlineKeyboardButton(text=f"Server {r['server_no']} — {r['name']} • {r['file_count']} file",callback_data=f"catalog:{r['server_no']}:0")])
+    buttons.append([InlineKeyboardButton(text='🔎 Kirim Code langsung',callback_data='getfile:direct')])
+    buttons.append([InlineKeyboardButton(text=_L(await _lang(target.from_user.id),'back'),callback_data='home')])
+    text='🗂 <b>DAFTAR SERVER</b>\n\nPilih server untuk melihat daftar Code.'
+    try: await target.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    except Exception: await target.message.answer(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
 @router.callback_query(F.data=='getfile')
 async def start(c):
-    lang = await _lang(c.from_user.id)
     await loading(c)
-    try:
-        await c.message.edit_text(
-            _L(await _lang(c.from_user.id),'send_code'),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=_L(lang,'back'), callback_data='home')]
-            ])
-        )
-    except Exception:
-        await c.message.answer(
-            _L(await _lang(c.from_user.id),'send_code'),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text=_L(lang,'back'), callback_data='home')]
-            ])
-        )
+    await show_server_catalog(c)
+
+@router.callback_query(F.data=='getfile:direct')
+async def direct_code_prompt(c):
+    lang=await _lang(c.from_user.id)
+    await c.answer()
+    await c.message.edit_text(_L(lang,'send_code'),reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_L(lang,'back'),callback_data='getfile')]]))
+
+@router.callback_query(F.data.startswith('catalog:'))
+async def catalog_page(c):
+    await loading(c)
+    try: _,server_no,page_raw=c.data.split(':',2); server_no=int(server_no); page=max(0,int(page_raw))
+    except Exception: return await c.answer('Permintaan tidak valid.',show_alert=True)
+    p=await get_pool(); server=await p.fetchrow('SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE',server_no)
+    if not server: return await c.answer('Server tidak tersedia.',show_alert=True)
+    total=int(await p.fetchval("SELECT COUNT(*) FROM files WHERE active=TRUE AND server_name LIKE ('Server '||$1||' —%')",server_no) or 0)
+    pages=max(1,(total+14)//15); page=min(page,pages-1)
+    rows=await p.fetch("""SELECT code,title,media_count,price_idr,views,likes,hates,favorites
+      FROM files WHERE active=TRUE AND server_name LIKE ('Server '||$1||' —%')
+      ORDER BY created_at DESC,id DESC LIMIT 15 OFFSET $2""",server_no,page*15)
+    lines=[f"🗂 <b>SERVER {server_no} • {html.escape(server['name'])}</b>",""]
+    buttons=[]
+    for i,r in enumerate(rows,start=page*15+1):
+        price=int(r['price_idr'] or 0); price_text=f"Rp{price:,}".replace(',','.') if price else 'GRATIS'
+        lines.append(f"{i}. 📝 <b>{html.escape(r['title'] or 'Untitled')}</b> • {int(r['media_count'] or 0)} media 💰 {price_text}")
+        lines.append(f"👁 {int(r['views'] or 0)} • 👍 {int(r['likes'] or 0)} • 👎 {int(r['hates'] or 0)} • ⭐ {int(r['favorites'] or 0)}")
+        buttons.append([InlineKeyboardButton(text=f"📝 {str(r['title'] or 'Untitled')[:45]}",callback_data=f"getreview:{r['code']}")])
+    lines += ['', 'Klik judul Code untuk membuka review gratis dan tombol download.']
+    nav=[]
+    if page>0: nav.append(InlineKeyboardButton(text='⬅️ Sebelumnya',callback_data=f'catalog:{server_no}:{page-1}'))
+    nav.append(InlineKeyboardButton(text=f'{page+1}/{pages}',callback_data='catalog:noop'))
+    if page+1<pages: nav.append(InlineKeyboardButton(text='Berikutnya ➡️',callback_data=f'catalog:{server_no}:{page+1}'))
+    if nav: buttons.append(nav)
+    buttons.append([InlineKeyboardButton(text='🗂 Daftar Server',callback_data='getfile')])
+    buttons.append([InlineKeyboardButton(text='🔙 Kembali',callback_data='home')])
+    await c.answer()
+    await c.message.edit_text('\n'.join(lines),parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data=='catalog:noop')
+async def catalog_noop(c): await c.answer()
 
 # Direct CODE input.
 # Do not hard-code the random part of the code: deployments may use a
@@ -229,10 +271,19 @@ async def receive(m):
         return
     await show(m,code)
 
+@router.callback_query(F.data.startswith('getreview:'))
+async def getreview(c):
+    code=c.data.split(':',1)[1]
+    f=await get_file(code)
+    if not f: return await c.answer('Code tidak ditemukan.',show_alert=True)
+    await c.answer()
+    await show(c.message,code,user_id=c.from_user.id)
+
 @router.callback_query(F.data.startswith('getcode:'))
 async def getcode(c):
     await loading(c); code=c.data.split(':',1)[1]; f=await get_file(code)
     if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     await c.answer()
     canonical=str(f['code'])
     await (await get_pool()).execute("UPDATE files SET views=views+1 WHERE code=$1", canonical)
@@ -246,8 +297,39 @@ async def _show_choices_message(c, text, **kwargs):
         return await c.message.answer(text, **kwargs)
 
 
+async def required_join_ok(bot, user_id, f, message):
+    ids=list(f['required_join_channels'] or [])
+    if not ids: return True
+    p=await get_pool(); rows=await p.fetch("SELECT id,title,chat_id,join_url FROM access_join_channels WHERE enabled=TRUE AND id=ANY($1::bigint[]) ORDER BY id",ids)
+    missing=[]
+    for row in rows:
+        try:
+            member=await bot.get_chat_member(int(row['chat_id']),int(user_id))
+            status=getattr(member,'status','')
+            joined=status in {'creator','administrator','member'} or (status=='restricted' and bool(getattr(member,'is_member',False)))
+        except Exception: joined=False
+        if not joined: missing.append(row)
+    if not missing: return True
+    buttons=[]
+    for row in missing:
+        if row['join_url']:
+            buttons.append([InlineKeyboardButton(text=f"📢 Join {str(row['title'])[:35]}",url=row['join_url'])])
+    buttons.append([InlineKeyboardButton(text='🔄 Verifikasi Join',callback_data=f"reqjoin:{f['code']}")])
+    await message.answer('🔒 <b>WAJIB JOIN CHANNEL/GROUP</b>\n\nGabung semua channel/grup berikut terlebih dahulu, lalu tekan Verifikasi Join untuk membuka Code.',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    return False
+
+@router.callback_query(F.data.startswith('reqjoin:'))
+async def verify_required_join(c):
+    code=c.data.split(':',1)[1]; f=await get_file(code)
+    if not f: return await c.answer('Code tidak ditemukan.',show_alert=True)
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message):
+        return await c.answer('Kamu belum join semua channel/grup.',show_alert=True)
+    await c.answer('Join berhasil diverifikasi.')
+    await open_choices(c,code,f)
+
 async def open_choices(c,code,f):
     lang=await _lang(c.from_user.id)
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     uid=c.from_user.id; n=int(f['media_count']); price=int(f['price_idr'] or 0)
     if int(f['owner_id']) == int(uid):
         kb=InlineKeyboardMarkup(inline_keyboard=[
@@ -501,6 +583,7 @@ async def continue_delivery(c):
     _,code,pg=c.data.split(':',2)
     f=await get_file(code)
     if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     permanent=int(f['owner_id'])==int(c.from_user.id)
     exp=None if permanent else await _access_expiry(c.from_user.id,code)
     if not permanent and exp is None:
@@ -529,6 +612,7 @@ async def openvip(c):
     f=await get_file(code)
     if not f:
         return await c.message.answer(_L(await _lang(c.from_user.id),'not_found'))
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     from utils.economy import vip_allowed, vip_cooldown_remaining
     if not await vip_allowed(c.from_user.id, code):
         remaining = await vip_cooldown_remaining(c.from_user.id, code)
@@ -565,6 +649,7 @@ async def openown(c):
     code=c.data.split(':',1)[1]
     f=await get_file(code)
     if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     if int(f['owner_id']) != int(c.from_user.id):
         return await c.answer(_L(lang,'not_owner'),show_alert=True)
     await c.answer(_L(await _lang(c.from_user.id),'own_success'))
@@ -579,6 +664,7 @@ async def openfree(c):
     f=await get_file(code)
     if not f:
         return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     if int(f['owner_id'])==int(c.from_user.id):
         return await c.answer('Gunakan tombol buka code milik sendiri.',show_alert=True)
     access_mode=str(f['access_mode'] or 'all').lower()
@@ -616,6 +702,7 @@ async def dismiss_payment_notice(c):
 async def openpaid(c):
     code=c.data.split(':',1)[1]; f=await get_file(code)
     if not f:return await c.answer('Code tidak ditemukan.',show_alert=True)
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     if not await has_permanent_or_paid_unlock(c.from_user.id,code):
         return await c.answer(_L(await _lang(c.from_user.id),'expired'),show_alert=True)
     await c.answer(_L(await _lang(c.from_user.id),'success_open'))
@@ -764,6 +851,7 @@ async def page(c):
     await loading(c)
     f=await get_file(code)
     if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     permanent=int(f['owner_id'])==int(c.from_user.id)
     exp=None if permanent else await _access_expiry(c.from_user.id,code)
     if not permanent and exp is None:
@@ -776,6 +864,7 @@ async def react(c):
     _,reaction,code=c.data.split(':',2); p=await get_pool()
     f=await get_file(code)
     if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
+    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     row=await p.fetchrow("SELECT 1 FROM code_reactions WHERE user_id=$1 AND code=$2 AND reaction=$3",c.from_user.id,code,reaction)
     col={'like':'likes','hate':'hates','favorite':'favorites'}[reaction]
     if row:
