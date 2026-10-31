@@ -19,11 +19,11 @@ WELCOME = {
         "📥 <b>CARA MENGGUNAKAN BOT</b>\n"
         "Kirim <i>Media Code</i> untuk mulai mencari dan membuka media.\n\n"
         "🔑 <b>MENU BOT</b>\n"
-        "• <code>/start</code> — Muat ulang bot\n"
-        "• <code>/code</code> — Jelajahi daftar Code\n"
-        "• <code>/vipbot</code> — Akses semua Code bot\n"
-        "• <code>/vip</code> — Informasi akses VIP Group\n"
-        "• <code>/group</code> — Informasi grup\n\n"
+        "• <a href='tg://bot_command?command=start'>/start</a> — Muat ulang bot\n"
+        "• <a href='tg://bot_command?command=code'>/code</a> — Jelajahi daftar Code\n"
+        "• <a href='tg://bot_command?command=vipbot'>/vipbot</a> — Akses semua Code bot\n"
+        "• <a href='tg://bot_command?command=vip'>/vip</a> — Informasi akses VIP Group\n"
+        "• <a href='tg://bot_command?command=group'>/group</a> — Informasi grup\n\n"
         "📋 <b>CHANNEL &amp; GRUP RESMI</b>\n"
         '📢 <a href="https://t.me/+vM6UWm69_6gyMjNk">Channel Update</a>\n'
         '🌟 <a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\n'
@@ -39,11 +39,11 @@ WELCOME = {
         "📥 <b>HOW TO USE</b>\n"
         "Send a <i>Media Code</i> to find and open media.\n\n"
         "🔑 <b>BOT MENU</b>\n"
-        "• <code>/start</code> — Refresh the bot\n"
-        "• <code>/code</code> — Browse all Codes\n"
-        "• <code>/vipbot</code> — Access all bot Codes\n"
-        "• <code>/vip</code> — VIP Group access information\n"
-        "• <code>/group</code> — Group information\n\n"
+        "• <a href='tg://bot_command?command=start'>/start</a> — Refresh the bot\n"
+        "• <a href='tg://bot_command?command=code'>/code</a> — Browse all Codes\n"
+        "• <a href='tg://bot_command?command=vipbot'>/vipbot</a> — Access all bot Codes\n"
+        "• <a href='tg://bot_command?command=vip'>/vip</a> — VIP Group access information\n"
+        "• <a href='tg://bot_command?command=group'>/group</a> — Group information\n\n"
         "📋 <b>OFFICIAL CHANNELS &amp; GROUPS</b>\n"
         '📢 <a href="https://t.me/+vM6UWm69_6gyMjNk">Updates Channel</a>\n'
         '🌟 <a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\n'
@@ -104,7 +104,15 @@ async def show_welcome(target, user, lang, edit=False, show_channels=True):
 async def start(m: Message):
     await ensure_user(m.from_user.id, m.from_user.username, m.from_user.full_name)
     p = await get_pool()
-    await p.execute("UPDATE users SET bot_started_at=NOW() WHERE user_id=$1", m.from_user.id)
+    was_started = await p.fetchval("SELECT bot_started_at IS NOT NULL FROM users WHERE user_id=$1", m.from_user.id)
+    parts = (m.text or "").split(maxsplit=1)
+    if not was_started and len(parts) == 2 and parts[1].startswith("ref_"):
+        token = parts[1][4:].strip()
+        invite = await p.fetchrow("SELECT inviter_id FROM free_code_invites WHERE token=$1", token) if token else None
+        if invite and int(invite["inviter_id"]) != int(m.from_user.id):
+            await p.execute("""INSERT INTO free_code_referrals(invite_token,invited_user_id)
+                VALUES($1,$2) ON CONFLICT(invited_user_id) DO NOTHING""", token, m.from_user.id)
+    await p.execute("UPDATE users SET bot_started_at=COALESCE(bot_started_at,NOW()) WHERE user_id=$1", m.from_user.id)
     if not await subscription_prompt(m.bot, m.chat.id, m.from_user.id):
         return
     lang = await get_lang(m.from_user.id)
@@ -198,6 +206,13 @@ async def reply_codes(m: Message):
     await m.bot.send_chat_action(m.chat.id, "typing")
     await _render_code_command(m, "all")
 
+
+
+
+@router.message(F.chat.type == "private", F.text.in_({"🎁 Ambil Code Free", "🎁 Get Free Code"}))
+async def free_codes_button(m: Message):
+    from handlers.misc import send_free_codes
+    await send_free_codes(m, 0)
 
 @router.message(F.chat.type == "private", F.text == "💬 Support")
 async def reply_support(m: Message, state: FSMContext):

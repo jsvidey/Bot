@@ -785,3 +785,75 @@ async def group_get_file(c):
         await c.answer(await _t(c.from_user.id,"sent_get"))
     except Exception:
         await c.answer(await _t(c.from_user.id,"open_private"), show_alert=True)
+
+
+# Free Code referral task: a referral counts only when a previously unseen user
+# opens the bot with the invite deep-link and presses Start.
+async def send_free_codes(target, page=0):
+    uid=target.from_user.id; lang=await _lang(uid); p=await get_pool(); per_page=10
+    total=int(await p.fetchval("SELECT COUNT(*) FROM files WHERE active=TRUE AND COALESCE(price_idr,0)=0") or 0)
+    pages=max(1,(total+per_page-1)//per_page); page=max(0,min(int(page),pages-1))
+    rows=await p.fetch("""SELECT code,title,media_count FROM files WHERE active=TRUE AND COALESCE(price_idr,0)=0
+        ORDER BY id DESC LIMIT $1 OFFSET $2""",per_page,page*per_page)
+    if not rows: return await target.answer("Belum ada Free Code tersedia." if lang=="id" else "No free codes available.")
+    lines=["🎁 <b>AMBIL CODE GRATIS</b>" if lang=="id" else "🎁 <b>GET FREE CODES</b>",""]
+    buttons=[]
+    for r in rows:
+        title=str(r["title"] or "Untitled")
+        lines.append(f"• <b>{html.escape(title)}</b> — {int(r['media_count'] or 0)} media")
+        buttons.append([InlineKeyboardButton(text=f"🎁 {title[:42]}",callback_data=f"freecode:{r['code']}")])
+    lines.append(f"\nHalaman {page+1}/{pages} • Total {total} Code Free" if lang=="id" else f"\nPage {page+1}/{pages} • {total} Free Codes")
+    nav=[]
+    if page: nav.append(InlineKeyboardButton(text="⬅️",callback_data=f"freepage:{page-1}"))
+    nav.append(InlineKeyboardButton(text=f"{page+1}/{pages}",callback_data="freepage:noop"))
+    if page+1<pages: nav.append(InlineKeyboardButton(text="➡️",callback_data=f"freepage:{page+1}"))
+    buttons.append(nav)
+    await target.answer("\n".join(lines),parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+
+@router.callback_query(F.data.startswith("freepage:"))
+async def free_codes_page(c):
+    part=c.data.split(":",1)[1]
+    if part=="noop": return await c.answer()
+    await c.answer(); await send_free_codes(c.message,int(part))
+
+@router.callback_query(F.data.startswith("freecode:"))
+async def free_code_task(c):
+    code=c.data.split(":",1)[1]; p=await get_pool()
+    row=await p.fetchrow("""SELECT code,title,media_count FROM files WHERE lower(code)=lower($1)
+        AND active=TRUE AND COALESCE(price_idr,0)=0""",code)
+    if not row: return await c.answer("Code tidak tersedia.",show_alert=True)
+    import secrets
+    token=await p.fetchval("SELECT token FROM free_code_invites WHERE inviter_id=$1 AND code=$2",c.from_user.id,row["code"])
+    if not token:
+        token=secrets.token_urlsafe(15).replace("-","").replace("_","")[:20]
+        await p.execute("""INSERT INTO free_code_invites(token,inviter_id,code) VALUES($1,$2,$3)
+            ON CONFLICT(inviter_id,code) DO NOTHING""",token,c.from_user.id,row["code"])
+        token=await p.fetchval("SELECT token FROM free_code_invites WHERE inviter_id=$1 AND code=$2",c.from_user.id,row["code"])
+    count=int(await p.fetchval("SELECT COUNT(*) FROM free_code_referrals WHERE invite_token=$1",token) or 0)
+    from utils.bot_identity import get_bot_username
+    botname=await get_bot_username(); share_url=f"https://t.me/{botname}?start=ref_{token}" if botname else ""
+    bar="🟩"*min(count,5)+"⬜"*(5-min(count,5))
+    text=(f"🎁 <b>TUGAS AMBIL FREE CODE</b>\n\n📝 <b>{html.escape(row['title'] or 'Untitled')}</b>\n"
+          f"🔑 <code>{html.escape(row['code'])}</code>\n📦 Total media: <b>{int(row['media_count'] or 0)}</b>\n\n"
+          f"👥 Undang 5 teman berbeda untuk menekan Start pada bot:\n{bar} <b>{min(count,5)}/5</b>\n\n")
+    text += ("✅ <b>Tugas selesai! Code sudah bisa dibuka.</b>" if count>=5 else
+             "⚠️ Hanya pengguna baru yang belum pernah menekan Start yang dihitung. Teman harus membuka link undangan dan benar-benar menekan Start.")
+    buttons=[]
+    if share_url:
+        from urllib.parse import quote
+        buttons.append([InlineKeyboardButton(text="📤 Bagikan Link Undangan",url=f"https://t.me/share/url?url={quote(share_url,safe='')}&text={quote('Buka bot ini dan tekan Start untuk membantu saya mendapatkan Free Code!')}")])
+    if count>=5: buttons.append([InlineKeyboardButton(text="🔓 Buka Free Code",callback_data=f"freeopen:{row['code']}")])
+    buttons += [[InlineKeyboardButton(text="🔄 Perbarui Progress",callback_data=f"freecode:{row['code']}")],
+                [InlineKeyboardButton(text="🔙 Daftar Free Code",callback_data="freepage:0")]]
+    await c.message.edit_text(text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+    await c.answer()
+
+@router.callback_query(F.data.startswith("freeopen:"))
+async def free_code_open(c):
+    code=c.data.split(":",1)[1]; p=await get_pool()
+    token=await p.fetchval("SELECT token FROM free_code_invites WHERE inviter_id=$1 AND code=$2",c.from_user.id,code)
+    count=int(await p.fetchval("SELECT COUNT(*) FROM free_code_referrals WHERE invite_token=$1",token) or 0) if token else 0
+    if count<5: return await c.answer("Undang 5 orang berbeda yang benar-benar menekan Start terlebih dahulu.",show_alert=True)
+    from handlers.getfile import show
+    await c.answer("Tugas selesai!")
+    await show(c.message,code,user_id=c.from_user.id)

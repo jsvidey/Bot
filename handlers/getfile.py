@@ -198,17 +198,18 @@ async def show(m,code,user_id=None):
 
 async def show_server_catalog(target):
     p=await get_pool()
-    rows=await p.fetch("""SELECT s.server_no,s.name,COUNT(f.id)::int AS file_count
+    rows=await p.fetch("""SELECT s.server_no,s.name,COUNT(f.id)::int AS file_count,
+      COALESCE(SUM(f.media_count),0)::int AS total_media
       FROM server_categories s LEFT JOIN files f ON f.active=TRUE
       AND f.server_name LIKE ('Server '||s.server_no||' —%')
       WHERE s.enabled=TRUE GROUP BY s.server_no,s.name ORDER BY s.server_no""")
     buttons=[]
     for r in rows:
         if int(r['file_count'] or 0):
-            buttons.append([InlineKeyboardButton(text=f"Server {r['server_no']} — {r['name']} • {r['file_count']} file",callback_data=f"catalog:{r['server_no']}:0")])
+            buttons.append([InlineKeyboardButton(text=f"Server {r['server_no']} — {r['name']} • {r['file_count']} Code • {r['total_media']} media",callback_data=f"catalog:{r['server_no']}:0")])
     buttons.append([InlineKeyboardButton(text='🔎 Kirim Code langsung',callback_data='getfile:direct')])
     buttons.append([InlineKeyboardButton(text=_L(await _lang(target.from_user.id),'back'),callback_data='home')])
-    text='🗂 <b>DAFTAR SERVER</b>\n\nPilih server untuk melihat daftar Code.'
+    text='🗂 <b>DAFTAR SERVER</b>\n\nJumlah Code dan total media ditampilkan pada setiap server.'
     try: await target.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
     except Exception: await target.message.answer(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
