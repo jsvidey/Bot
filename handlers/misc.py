@@ -789,8 +789,8 @@ async def group_get_file(c):
 
 # Free Code referral task: a referral counts only when a previously unseen user
 # opens the bot with the invite deep-link and presses Start.
-async def send_free_codes(target, page=0):
-    uid=target.from_user.id; lang=await _lang(uid); p=await get_pool(); per_page=10
+async def send_free_codes(target, page=0, uid=None):
+    uid=int(uid or target.from_user.id); lang=await _lang(uid); p=await get_pool(); per_page=10
     total=int(await p.fetchval("SELECT COUNT(*) FROM files WHERE active=TRUE AND COALESCE(price_idr,0)=0") or 0)
     pages=max(1,(total+per_page-1)//per_page); page=max(0,min(int(page),pages-1))
     rows=await p.fetch("""SELECT code,title,media_count FROM files WHERE active=TRUE AND COALESCE(price_idr,0)=0
@@ -814,7 +814,7 @@ async def send_free_codes(target, page=0):
 async def free_codes_page(c):
     part=c.data.split(":",1)[1]
     if part=="noop": return await c.answer()
-    await c.answer(); await send_free_codes(c.message,int(part))
+    await c.answer(); await send_free_codes(c.message,int(part),uid=c.from_user.id)
 
 @router.callback_query(F.data.startswith("freecode:"))
 async def free_code_task(c):

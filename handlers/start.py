@@ -84,14 +84,24 @@ async def show_welcome(target, user, lang, edit=False, show_channels=True):
             await target.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
             sent = target
         except Exception:
-            sent = await target.answer(text, parse_mode="HTML", disable_web_page_preview=True)
+            sent = await target.answer(
+                text, parse_mode="HTML", disable_web_page_preview=True,
+                reply_markup=reply_kb if show_channels else None
+            )
+        # Editing an existing message cannot attach a ReplyKeyboardMarkup.
+        # Send the keyboard as a separate message only for edit-based flows.
+        if show_channels:
+            try:
+                await target.bot.send_message(user.id, "⬇️ Menu" if lang == "id" else "⬇️ Menu", reply_markup=reply_kb)
+            except Exception:
+                pass
     else:
-        sent = await target.answer(text, parse_mode="HTML", disable_web_page_preview=True)
-    if show_channels:
-        try:
-            await target.bot.send_message(user.id, "⬇️ Menu" if lang == "id" else "⬇️ Menu", reply_markup=reply_kb)
-        except Exception:
-            pass
+        # Attach the persistent keyboard to the welcome message itself so it
+        # is immediately visible below the chat and is not a separate hidden message.
+        sent = await target.answer(
+            text, parse_mode="HTML", disable_web_page_preview=True,
+            reply_markup=reply_kb if show_channels else None
+        )
     # Pin the welcome message where Telegram allows it; failure is non-fatal.
     try:
         msg = sent if isinstance(sent, Message) else getattr(target, "message", None)
@@ -102,12 +112,16 @@ async def show_welcome(target, user, lang, edit=False, show_channels=True):
 
 @router.message(F.chat.type == "private", CommandStart())
 async def start(m: Message):
-    await ensure_user(m.from_user.id, m.from_user.username, m.from_user.full_name)
     p = await get_pool()
-    was_started = await p.fetchval("SELECT bot_started_at IS NOT NULL FROM users WHERE user_id=$1", m.from_user.id)
     parts = (m.text or "").split(maxsplit=1)
-    if not was_started and len(parts) == 2 and parts[1].startswith("ref_"):
-        token = parts[1][4:].strip()
+    payload = parts[1].strip() if len(parts) == 2 else ""
+    is_referral_start = payload.startswith("ref_")
+    # Check existence BEFORE ensure_user inserts/updates the account. Existing
+    # bot users must never be counted as newly invited referrals.
+    existing_user = await p.fetchval("SELECT 1 FROM users WHERE user_id=$1", m.from_user.id)
+    await ensure_user(m.from_user.id, m.from_user.username, m.from_user.full_name)
+    if not existing_user and is_referral_start:
+        token = payload[4:].strip()
         invite = await p.fetchrow("SELECT inviter_id FROM free_code_invites WHERE token=$1", token) if token else None
         if invite and int(invite["inviter_id"]) != int(m.from_user.id):
             await p.execute("""INSERT INTO free_code_referrals(invite_token,invited_user_id)
@@ -118,12 +132,12 @@ async def start(m: Message):
     lang = await get_lang(m.from_user.id)
     parts = (m.text or "").split(maxsplit=1)
     if not lang:
-        pending = parts[1].strip() if len(parts) == 2 and parts[1].strip() else None
+        pending = payload if payload and not is_referral_start else None
         await p.execute("UPDATE users SET pending_start_code=$1 WHERE user_id=$2", pending, m.from_user.id)
         return await language_prompt(m)
-    if len(parts) == 2 and parts[1].strip():
+    if payload and not is_referral_start:
         from handlers.getfile import show
-        return await show(m, parts[1].strip())
+        return await show(m, payload)
     await show_welcome(m, m.from_user, lang)
 
 @router.callback_query(F.data.startswith("lang:"))
