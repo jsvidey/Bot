@@ -78,6 +78,18 @@ async def init_db():
       ('manual_qr_file_id',''),('preferred_b2_account','0'),('default_watermark_enabled','on'),('watermark_text',''),('admin_chat_enabled','on'),('vip_channels_json',''),('vip_updates_url','https://t.me/+ezE2-f-YtEo4NzU1')
     ON CONFLICT(key) DO NOTHING;
 
+    CREATE TABLE IF NOT EXISTS free_code_invites(
+      token TEXT PRIMARY KEY, inviter_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+      code TEXT NOT NULL REFERENCES files(code) ON DELETE CASCADE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(inviter_id,code)
+    );
+    CREATE TABLE IF NOT EXISTS free_code_referrals(
+      id BIGSERIAL PRIMARY KEY, invite_token TEXT NOT NULL REFERENCES free_code_invites(token) ON DELETE CASCADE,
+      invited_user_id BIGINT NOT NULL UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_free_code_referrals_token ON free_code_referrals(invite_token);
+
     CREATE TABLE IF NOT EXISTS server_categories(
       server_no INT PRIMARY KEY CHECK(server_no BETWEEN 1 AND 10),
       name TEXT NOT NULL,
