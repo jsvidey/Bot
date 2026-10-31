@@ -84,6 +84,17 @@ async def init_db():
       enabled BOOLEAN NOT NULL DEFAULT TRUE,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS access_join_channels(
+      id BIGSERIAL PRIMARY KEY, title TEXT NOT NULL, chat_id BIGINT NOT NULL,
+      join_url TEXT NOT NULL DEFAULT '', enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO access_join_channels(title,chat_id,join_url,enabled)
+      SELECT 'Slot Channel/Group '||n,0,'',FALSE FROM generate_series(1,5) n
+      WHERE NOT EXISTS (SELECT 1 FROM access_join_channels);
+
+    ALTER TABLE files ADD COLUMN IF NOT EXISTS required_join_channels BIGINT[] NOT NULL DEFAULT ARRAY[]::BIGINT[];
+
     INSERT INTO server_categories(server_no,name,enabled) VALUES
       (1,'Media 5th ke bawah',TRUE),(2,'Media SMP',TRUE),(3,'Tante/Janda/STW',TRUE),
       (4,'Server 4',TRUE),(5,'Server 5',TRUE),(6,'Server 6',TRUE),(7,'OmeTV',TRUE),
