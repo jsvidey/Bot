@@ -1226,10 +1226,12 @@ async def admin_chat_toggle(c):
 async def admin_channels(c):
     if not await admin_access(c.from_user.id): return await c.answer('No access', show_alert=True)
     p = await get_pool()
-    rows = await p.fetch("SELECT key,value FROM settings WHERE key IN ('bot_username','force_channel_id','force_channel_username','force_channel_url','notice_sub_channel_id','notice_sub_channel_username','notice_sub_channel_url') ORDER BY key")
+    rows = await p.fetch("SELECT key,value FROM settings WHERE key IN ('force_channel_id','force_channel_username','force_channel_url','notice_sub_channel_id','notice_sub_channel_username','notice_sub_channel_url') ORDER BY key")
     values = {r['key']: str(r['value'] or '') for r in rows}
+    from utils.bot_identity import get_bot_username
+    active_bot_username = await get_bot_username()
     text = ('📡 <b>FORCE JOIN CHANNELS</b>\n\n' +
-        f"Username bot untuk link: <code>{html.escape(values.get('bot_username','JsShowfileebot') or 'JsShowfileebot')}</code>\n\n" +
+        f"Username bot aktif (otomatis): <code>@{html.escape(active_bot_username)}</code>\n\n" +
         f"Channel 1 ID: <code>{html.escape(values.get('force_channel_id','(env)'))}</code>\nUsername: <code>{html.escape(values.get('force_channel_username','(env)'))}</code>\nURL: {html.escape(values.get('force_channel_url','(env)'))}\n\n" +
         f"Channel 2 ID: <code>{html.escape(values.get('notice_sub_channel_id','(env)'))}</code>\nUsername: <code>{html.escape(values.get('notice_sub_channel_username','(env)'))}</code>\nURL: {html.escape(values.get('notice_sub_channel_url','(env)'))}\n\nPilih item untuk mengubahnya. Pastikan bot menjadi admin pada channel agar pemeriksaan membership dapat bekerja.")
     buttons = [[InlineKeyboardButton(text='🤖 Edit Username Bot', callback_data='admsetting:bot_username')]]
