@@ -309,12 +309,18 @@ class B2Pool:
                 )
 
         try:
+            # GetObject/download_fileobj is the operation required to deliver media.
+            # Do not make delivery depend on a second HEAD request: some B2
+            # application-key/bucket permission combinations allow object reads
+            # while HEAD metadata checks are denied. Verify the downloaded file
+            # locally instead.
             await asyncio.to_thread(run)
-            meta = await asyncio.to_thread(
-                account.client.head_object,
-                Bucket=account.bucket,
-                Key=str(object_key),
-            )
+            downloaded_size = await asyncio.to_thread(os.path.getsize, path)
+            if downloaded_size <= 0:
+                raise RuntimeError(
+                    f"Backblaze returned an empty object: account={account_id}, key={object_key}"
+                )
+            meta = {"ContentLength": downloaded_size}
             return path, meta
         except Exception:
             try:
