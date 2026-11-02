@@ -296,31 +296,52 @@ class B2Pool:
                 pass
 
     async def download(self, account_id, object_key):
+        """Download with S3 GetObject directly; boto3 download_fileobj may issue HeadObject first."""
         account = self._account(account_id)
         fd, path = tempfile.mkstemp(prefix="pastele_b2_")
         os.close(fd)
 
         def run():
-            with open(path, "wb") as fh:
-                account.client.download_fileobj(
-                    account.bucket,
-                    str(object_key),
-                    fh,
+            response = account.client.get_object(
+                Bucket=account.bucket,
+                Key=str(object_key),
+            )
+            body = response.get("Body")
+            if body is None:
+                raise RuntimeError(
+                    f"Backblaze GetObject returned no body: account={account_id}, key={object_key}"
                 )
+            try:
+                with open(path, "wb") as fh:
+                    for chunk in body.iter_chunks(chunk_size=1024 * 1024):
+                        if chunk:
+                            fh.write(chunk)
+            finally:
+                body.close()
+            return response
 
         try:
-            # GetObject/download_fileobj is the operation required to deliver media.
-            # Do not make delivery depend on a second HEAD request: some B2
-            # application-key/bucket permission combinations allow object reads
-            # while HEAD metadata checks are denied. Verify the downloaded file
-            # locally instead.
-            await asyncio.to_thread(run)
+            response = await asyncio.to_thread(run)
             downloaded_size = await asyncio.to_thread(os.path.getsize, path)
+            expected_size = int(response.get("ContentLength") or 0)
             if downloaded_size <= 0:
                 raise RuntimeError(
                     f"Backblaze returned an empty object: account={account_id}, key={object_key}"
                 )
-            meta = {"ContentLength": downloaded_size}
+            if expected_size and downloaded_size != expected_size:
+                raise RuntimeError(
+                    f"Backblaze download size mismatch: expected={expected_size}, "
+                    f"downloaded={downloaded_size}, account={account_id}, key={object_key}"
+                )
+            meta = {
+                "ContentLength": downloaded_size,
+                "ContentType": response.get("ContentType"),
+                "ETag": response.get("ETag"),
+            }
+            logger.info(
+                "Backblaze B2 %s GetObject success: key=%s size=%s",
+                account_id, object_key, downloaded_size,
+            )
             return path, meta
         except Exception:
             try:
