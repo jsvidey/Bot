@@ -448,12 +448,16 @@ async def send_page(bot, chat_id, code, media, page, access_expires_at=None, per
                 delivered = True
             except Exception as exc:
                 b2_error = str(exc)
+                import logging
+                logging.getLogger(__name__).exception("B2 delivery failed for code=%s media_index=%s chat_id=%s", code, i, chat_id)
         if not delivered:
             try:
                 last_msg = await deliver_telegram_file_id(bot, chat_id, item, caption=caption, protect_content=not allow_forward)
                 delivered = True
             except Exception as exc:
                 telegram_error = str(exc)
+                import logging
+                logging.getLogger(__name__).exception("Telegram file_id fallback failed for code=%s media_index=%s chat_id=%s", code, i, chat_id)
         if not delivered:
             reason = (
                 f"Backblaze gagal: {str(b2_error or 'tidak digunakan untuk file ini')[:180]} | "
