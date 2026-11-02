@@ -27,7 +27,7 @@ WELCOME = {
         "📋 <b>CHANNEL &amp; GRUP RESMI</b>\n"
         '📢 <a href="https://t.me/+vM6UWm69_6gyMjNk">Channel Update</a>\n'
         '🌟 <a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\n'
-        '🛠 <a href="https://t.me/+ezE2-f-YtEo4NzU1">Bot &amp; Website Development</a>\n\n'
+        '🛠 <a href="https://t.me/botstips">Bot &amp; Website Development</a>\n\n'
         "━━━━━━━━━━━━━━━━━━\n"
         "✨ <b>Belum punya Code?</b> Tekan menu <b>🔑 Code</b> untuk melihat daftar.\n"
         "⭐ Tekan judul Code untuk membuka halaman review dan melihat media terkait.\n\n"
