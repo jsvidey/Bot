@@ -24,7 +24,7 @@ def channel_reply_kb(lang: str = "id", is_admin: bool = False):
         KeyboardButton(text="📚 Lihat Daftar VIP" if not en else "📚 View VIP List"),
         KeyboardButton(text="📥 Getfile"),
         KeyboardButton(text="🔑 Code"),
-        KeyboardButton(text="🎁 Ambil Code Free" if not en else "🎁 Get Free Code"),
+        KeyboardButton(text="🎁 Code Free Harian" if not en else "🎁 Get Free Code"),
         KeyboardButton(text="🎟 My Code Discount"),
         KeyboardButton(text="🎁 Donate" if en else "🎁 Donasi"),
         KeyboardButton(text="💬 Support"),
