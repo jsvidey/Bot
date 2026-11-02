@@ -503,10 +503,16 @@ async def config_action(c: CallbackQuery, state: FSMContext):
         if not preview:
             return await c.answer('Belum ada preview.', show_alert=True)
         try:
+            from utils.media_sender import deliver_one, deliver_telegram_file_id
             for item in preview:
-                fid = item.get('telegram_file_id')
-                if item.get('type') == 'video': await c.bot.send_video(c.from_user.id, fid, caption='🖼 Preview gratis')
-                else: await c.bot.send_photo(c.from_user.id, fid, caption='🖼 Preview gratis' if item is preview[0] else None)
+                cap='🖼 Preview gratis' if item is preview[0] else None
+                if item.get('drive_account') is not None and item.get('drive_file_id'):
+                    try:
+                        await deliver_one(c.bot,c.from_user.id,item,caption=cap)
+                    except Exception:
+                        await deliver_telegram_file_id(c.bot,c.from_user.id,item,caption=cap)
+                else:
+                    await deliver_telegram_file_id(c.bot,c.from_user.id,item,caption=cap)
         except Exception as e:
             await c.message.answer(f'Preview tidak dapat dikirim: {html.escape(str(e)[:200])}')
         return
@@ -625,17 +631,46 @@ async def config_preview_receive(m: Message, state: FSMContext):
     items = list(d.get('preview_media') or [])
     if m.video:
         if items: return await m.answer('Preview hanya boleh 1 video atau maksimal 5 gambar. Hapus preview lama/gunakan mode ganti.')
-        v=m.video
-        items=[{'type':'video','telegram_file_id':v.file_id,'telegram_file_unique_id':v.file_unique_id,'file_name':v.file_name or 'preview.mp4','mime_type':v.mime_type or 'video/mp4','file_size':v.file_size or 0,'storage_status':'telegram_file_id_only'}]
+        obj=m.video; typ='video'; name=obj.file_name or 'preview.mp4'; mime=obj.mime_type or 'video/mp4'
     elif m.photo:
         if any(x.get('type') == 'video' for x in items): return await m.answer('Preview sudah berisi video; tidak bisa dicampur gambar.')
         if len(items) >= 5: return await m.answer('Maksimal 5 gambar preview.')
-        ph=m.photo[-1]
-        items.append({'type':'photo','telegram_file_id':ph.file_id,'telegram_file_unique_id':ph.file_unique_id,'file_name':f'{ph.file_unique_id}.jpg','mime_type':'image/jpeg','file_size':ph.file_size or 0,'storage_status':'telegram_file_id_only'})
+        obj=m.photo[-1]; typ='photo'; name=f'{obj.file_unique_id}.jpg'; mime='image/jpeg'
     else:
         return await m.answer('Kirim 1 video atau maksimal 5 gambar.')
+
+    record={
+        'type':typ,'telegram_file_id':obj.file_id,
+        'telegram_file_unique_id':obj.file_unique_id,
+        'file_name':name,'mime_type':mime,'file_size':obj.file_size or 0,
+        'drive_account':None,'drive_file_id':None,
+        'storage_status':'telegram_file_id_only'
+    }
+    # Store preview media in B2 as well, so a preview remains deliverable
+    # after switching to a different Telegram bot token.
+    if b2_pool.available and record['file_size'] <= 20*1024*1024:
+        tmp=None
+        try:
+            fd,tmp=tempfile.mkstemp(prefix='jsshow_preview_'); os.close(fd)
+            tgfile=await m.bot.get_file(obj.file_id)
+            await m.bot.download_file(tgfile.file_path,tmp)
+            account,key,_=await b2_pool.upload(tmp,name,mime)
+            record.update({'drive_account':account,'drive_file_id':key,'storage_status':'b2_available'})
+        except Exception as exc:
+            record['storage_status']='b2_failed_telegram_fallback'
+            try:
+                await (await get_pool()).execute(
+                    "INSERT INTO error_logs(source,message,user_id) VALUES($1,$2,$3)",
+                    'preview_b2_upload_fallback',str(exc)[:1000],m.from_user.id)
+            except Exception:
+                pass
+        finally:
+            if tmp:
+                try: os.remove(tmp)
+                except OSError: pass
+    items.append(record)
     await state.update_data(preview_media=items)
-    await m.answer(f'✅ Preview tersimpan sementara: {len(items)} item. Kirim lagi atau tekan Selesai Preview.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+    await m.answer(f'✅ Preview tersimpan sementara: {len(items)} item. Penyimpanan: {"B2" if record.get("drive_file_id") else "Telegram cadangan"}. Kirim lagi atau tekan Selesai Preview.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text='✅ Selesai Preview', callback_data='upcfgpreview:done')],
         [InlineKeyboardButton(text='↩️ Kembali ke Panel', callback_data='upcfg:back')]]))
 

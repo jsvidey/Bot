@@ -156,13 +156,18 @@ async def show(m,code,user_id=None):
         preview=preview_items[0] if preview_items else None
         if preview:
             try:
-                if len(preview_items)==1 and preview.get('type')=='video':
-                    await m.bot.send_video(m.chat.id,preview['telegram_file_id'],caption=caption,parse_mode='HTML',reply_markup=kb)
-                    return
                 if preview_items and all(x.get('type')=='photo' for x in preview_items):
-                    from aiogram.types import InputMediaPhoto
-                    await m.bot.send_media_group(m.chat.id,media=[InputMediaPhoto(media=x['telegram_file_id']) for x in preview_items[:5]])
-                    return await m.answer(caption,parse_mode='HTML',reply_markup=kb)
+                    for idx,item in enumerate(preview_items[:5]):
+                        cap=caption if idx==0 else None
+                        try:
+                            if item.get('drive_account') is not None and item.get('drive_file_id'):
+                                await deliver_one(m.bot,m.chat.id,item,caption=cap,reply_markup=kb if idx==0 else None)
+                            else:
+                                await deliver_telegram_file_id(m.bot,m.chat.id,item,caption=cap,reply_markup=kb if idx==0 else None)
+                        except Exception:
+                            if item.get('drive_account') is not None and item.get('drive_file_id'):
+                                await deliver_telegram_file_id(m.bot,m.chat.id,item,caption=cap,reply_markup=kb if idx==0 else None)
+                    return
                 if preview.get('drive_account') is not None and preview.get('drive_file_id'):
                     await deliver_one(m.bot,m.chat.id,preview,caption=caption,reply_markup=kb)
                 else:
@@ -183,10 +188,17 @@ async def show(m,code,user_id=None):
     except Exception:
         preview_items=[]
     try:
-        if len(preview_items)==1 and preview_items[0].get('type')=='video':
-            await m.bot.send_video(m.chat.id,preview_items[0]['telegram_file_id'],caption=f"🎬 Preview • {html.escape(f['title'] or 'Untitled')}",parse_mode='HTML')
-        elif preview_items and all(x.get('type')=='photo' for x in preview_items):
-            await m.bot.send_media_group(m.chat.id,media=[InputMediaPhoto(media=x['telegram_file_id']) for x in preview_items[:5]])
+        if preview_items:
+            for idx,item in enumerate(preview_items[:5]):
+                cap=f"🎬 Preview • {html.escape(f['title'] or 'Untitled')}" if idx==0 else None
+                try:
+                    if item.get('drive_account') is not None and item.get('drive_file_id'):
+                        await deliver_one(m.bot,m.chat.id,item,caption=cap)
+                    else:
+                        await deliver_telegram_file_id(m.bot,m.chat.id,item,caption=cap)
+                except Exception:
+                    # Preview is optional; never block opening the actual code.
+                    continue
     except Exception:
         pass
     await m.answer(
@@ -459,11 +471,20 @@ async def send_page(bot, chat_id, code, media, page, access_expires_at=None, per
                 import logging
                 logging.getLogger(__name__).exception("Telegram file_id fallback failed for code=%s media_index=%s chat_id=%s", code, i, chat_id)
         if not delivered:
-            reason = (
-                f"Backblaze gagal: {str(b2_error or 'tidak digunakan untuk file ini')[:180]} | "
-                f"Telegram file_id gagal: {str(telegram_error or 'tidak tersedia')[:180]}"
-            )
+            if has_b2:
+                reason = f"B2 tidak dapat diakses: {str(b2_error or 'unduhan gagal')[:180]}; Telegram file_id bot lama/tidak valid: {str(telegram_error or 'tidak tersedia')[:140]}"
+            else:
+                reason = f"File tidak tersimpan di B2; Telegram file_id bot lama/tidak valid: {str(telegram_error or 'tidak tersedia')[:180]}"
             missing.append({'index': i, 'reason': reason})
+            try:
+                await bot.send_message(
+                    chat_id,
+                    f"⚠️ <b>Media {i}/{total} tidak tersedia</b>\n"
+                    "Media ini dilewati. Bot sedang melanjutkan ke media berikutnya.",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
 
         if delivered:
             sent += 1
@@ -501,19 +522,17 @@ async def send_page(bot, chat_id, code, media, page, access_expires_at=None, per
             except Exception:
                 pass
 
-        await asyncio.sleep(delay_ms / 1000)
+        if i < start + len(chunk):
+            await asyncio.sleep(delay_ms / 1000)
 
     if missing:
-        lines = [
-            "⚠️ <b>MEDIA TIDAK TERSEDIA</b>",
-            "",
-            f"🔑 <code>{html.escape(code)}</code>",
-            f"Media gagal dikirim: <b>{len(missing)}</b>",
-        ]
-        for item in missing:
-            lines.append(f"📁 Media {item.get('index', '?')}: {html.escape(str(item.get('reason', 'Sumber media tidak tersedia'))[:300])}")
         try:
-            await bot.send_message(chat_id, "\n".join(lines), parse_mode="HTML")
+            await bot.send_message(
+                chat_id,
+                f"📊 <b>Pengiriman selesai</b>\nBerhasil: <b>{sent}</b>/{len(chunk)}\n"
+                f"Tidak tersedia: <b>{len(missing)}</b> media. Media lainnya tetap dikirim.",
+                parse_mode="HTML",
+            )
         except Exception:
             pass
     return sent, missing
@@ -527,11 +546,13 @@ async def delivery_kb(code, page, total, done=False, lang='id'):
     if page + 1 < pages:
         nav.append(InlineKeyboardButton(text='Next ➡️', callback_data=f'page:{code}:{page+1}'))
     if nav: rows.append(nav)
-    # Quick page-jump buttons for large collections, kept within Telegram callback limits.
-    if pages > 2:
-        jumps = [0, max(0, page-1), min(pages-1, page+1), pages-1]
-        jumps = list(dict.fromkeys(jumps))
-        rows.append([InlineKeyboardButton(text=f'📄 {n+1}', callback_data=f'page:{code}:{n}') for n in jumps])
+    # Completed pages ✅, current page ❇️, upcoming pages ❎.
+    page_buttons = []
+    for n in range(pages):
+        mark = '❇️' if n == page else ('✅' if n < page else '❎')
+        page_buttons.append(InlineKeyboardButton(text=f'{n+1}{mark}', callback_data=f'page:{code}:{n}'))
+    for offset in range(0, len(page_buttons), 5):
+        rows.append(page_buttons[offset:offset+5])
     rows.append([
         InlineKeyboardButton(text='👍 Like', callback_data=f'react:like:{code}'),
         InlineKeyboardButton(text='👎 No Hate', callback_data=f'react:hate:{code}'),
@@ -569,16 +590,24 @@ async def deliver_page(c,code,page,permanent=False,access_expires_at=None):
     if page*10 >= total:
         await c.answer(_L(await _lang(c.from_user.id),'all_sent'),show_alert=True)
         return True
+    lang = await _lang(c.from_user.id)
+    progress = await c.message.answer(
+        f"⏳ <b>Mengirim media halaman {page+1}...</b>\n"
+        "Media diproses satu per satu. Jika ada yang tidak tersedia, bot akan melewatinya.",
+        parse_mode="HTML",
+    )
     sent,_=await send_page(
         c.bot,c.from_user.id,code,media,page,
         access_expires_at=access_expires_at,permanent=permanent
     )
     done=(page+1)*10 >= total
-    text=(_L(await _lang(c.from_user.id),'sent',sent=sent)
-          if not done else
-          _L(await _lang(c.from_user.id),'done',total=total))
-    await c.message.answer(text,parse_mode='HTML',
-                           reply_markup=await delivery_kb(code,page,total,done=done,lang=await _lang(c.from_user.id)))
+    text=(_L(lang,'sent',sent=sent) if not done else _L(lang,'done',total=total))
+    try:
+        await progress.edit_text(text,parse_mode='HTML',
+            reply_markup=await delivery_kb(code,page,total,done=done,lang=lang))
+    except Exception:
+        await c.message.answer(text,parse_mode='HTML',
+            reply_markup=await delivery_kb(code,page,total,done=done,lang=lang))
     return True
 
 @router.callback_query(F.data.startswith('continue:'))
