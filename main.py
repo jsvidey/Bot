@@ -15,6 +15,11 @@ logging.basicConfig(level=logging.INFO,format='%(asctime)s | %(levelname)s | %(m
 @asynccontextmanager
 async def lifespan(app):
  await get_pool(); await init_db(); await b2_pool.reload_from_db()
+ # Automatically detect the username belonging to the currently deployed BOT_TOKEN.
+ # This replaces any stale username left by previously banned/replaced bots.
+ from utils.bot_identity import refresh_bot_identity
+ active_username = await refresh_bot_identity(bot)
+ logging.info("Active Telegram bot identity: @%s (loaded from current BOT_TOKEN)", active_username)
  try:
   await bot.set_my_commands([
    BotCommand(command="start", description="Mulai / Start bot"),
