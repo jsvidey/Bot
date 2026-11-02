@@ -325,11 +325,53 @@ async def admset(c,state:FSMContext):
 
 @router.callback_query(F.data=='adm:stats')
 async def stats(c):
- if not await admin_access(c.from_user.id): return
+ if not await admin_access(c.from_user.id): return await c.answer('No access',show_alert=True)
  p=await get_pool()
- r=await p.fetchrow("SELECT COUNT(*) users FROM users")
- f=await p.fetchrow("SELECT COUNT(*) codes,COALESCE(SUM(media_count),0) media,COALESCE(SUM(views),0) views FROM files")
- await c.message.edit_text(f"📊 <b>STATISTICS</b>\n\n👥 Users: {r['users']}\n🔑 Codes: {f['codes']}\n📦 Media: {f['media']}\n👁 Views: {f['views']}",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]]))
+ try:
+  r=await p.fetchrow("""
+   SELECT COUNT(*)::BIGINT AS total_users,
+    COUNT(*) FILTER (WHERE last_seen >= NOW()-INTERVAL '24 hours')::BIGINT AS active_24h,
+    COUNT(*) FILTER (WHERE last_seen >= NOW()-INTERVAL '7 days')::BIGINT AS active_7d,
+    COUNT(*) FILTER (WHERE last_seen >= NOW()-INTERVAL '30 days')::BIGINT AS active_30d,
+    COUNT(*) FILTER (WHERE last_seen >= DATE_TRUNC('month',NOW()))::BIGINT AS active_this_month,
+    COUNT(*) FILTER (WHERE created_at >= DATE_TRUNC('month',NOW()))::BIGINT AS new_this_month,
+    COUNT(*) FILTER (WHERE created_at >= NOW()-INTERVAL '30 days')::BIGINT AS new_30d
+   FROM users
+  """)
+  f=await p.fetchrow("SELECT COUNT(*)::BIGINT codes,COALESCE(SUM(media_count),0)::BIGINT media,COALESCE(SUM(views),0)::BIGINT views FROM files")
+  daily=await p.fetch("""
+   SELECT TO_CHAR(days.day_start,'DD Mon') AS label, COUNT(u.user_id)::BIGINT AS total
+   FROM generate_series(CURRENT_DATE-6,CURRENT_DATE,INTERVAL '1 day') AS days(day_start)
+   LEFT JOIN users u ON u.created_at >= days.day_start AND u.created_at < days.day_start+INTERVAL '1 day'
+   GROUP BY days.day_start ORDER BY days.day_start
+  """)
+  monthly=await p.fetch("""
+   SELECT TO_CHAR(months.month_start,'Mon YYYY') AS label, COUNT(u.user_id)::BIGINT AS total
+   FROM generate_series(DATE_TRUNC('month',CURRENT_DATE)-INTERVAL '5 months',DATE_TRUNC('month',CURRENT_DATE),INTERVAL '1 month') AS months(month_start)
+   LEFT JOIN users u ON u.created_at >= months.month_start AND u.created_at < months.month_start+INTERVAL '1 month'
+   GROUP BY months.month_start ORDER BY months.month_start
+  """)
+  daily_text='\n'.join(f"• {x['label']}: <b>{x['total']}</b>" for x in daily)
+  monthly_text='\n'.join(f"• {x['label']}: <b>{x['total']}</b>" for x in monthly)
+  text=("📊 <b>STATISTIK PENGGUNA JSSHOW</b>\n\n"
+   f"👥 Total terdaftar: <b>{r['total_users']}</b>\n"
+   f"🟢 Aktif 24 jam: <b>{r['active_24h']}</b>\n"
+   f"📅 Aktif 7 hari: <b>{r['active_7d']}</b>\n"
+   f"🗓 Aktif 30 hari: <b>{r['active_30d']}</b>\n"
+   f"📆 Aktif bulan ini: <b>{r['active_this_month']}</b>\n"
+   f"🆕 Pengguna baru 30 hari: <b>{r['new_30d']}</b>\n"
+   f"🆕 Pengguna baru bulan ini: <b>{r['new_this_month']}</b>\n\n"
+   f"<b>🆕 Pengguna baru per hari (7 hari)</b>\n{daily_text}\n\n"
+   f"<b>📊 Pengguna baru per bulan (6 bulan)</b>\n{monthly_text}\n\n"
+   f"🔑 Total code: <b>{f['codes']}</b>\n📦 Total media: <b>{f['media']}</b>\n👁 Total views: <b>{f['views']}</b>\n\n"
+   "<i>Aktif dihitung dari last_seen di database bot, bukan statistik resmi Monthly Users Telegram.</i>")
+  await c.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+   [InlineKeyboardButton(text='🔄 Refresh Statistik',callback_data='adm:stats')],
+   [InlineKeyboardButton(text='🔙 Panel',callback_data='adm:panel')]
+  ]))
+  await c.answer()
+ except Exception as e:
+  await c.answer('Gagal memuat statistik: '+str(e)[:150],show_alert=True)
 
 @router.callback_query(F.data=='adm:b2')
 async def b2menu(c):
