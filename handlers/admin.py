@@ -33,7 +33,8 @@ async def admincheck(m):
         f"👑 Access: <b>{'YES' if access else 'NO'}</b>\n\n"
         f"OWNER_ID: <code>{html.escape(d['owner_id'] or '-')}</code>\n"
         f"ADMINS: <code>{html.escape(d['admins'] or '-')}</code>\n"
-        f"ADMIN_IDS: <code>{html.escape(d['admin_ids'] or '-')}</code>",
+        f"ADMIN_IDS: <code>{html.escape(d['admin_ids'] or '-')}</code>\n"
+        f"OWNER_IDS: <code>{html.escape(d['owner_ids'] or '-')}</code>",
         parse_mode="HTML",
     )
 

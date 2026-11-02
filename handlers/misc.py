@@ -829,7 +829,8 @@ async def free_code_task(c):
         await p.execute("""INSERT INTO free_code_invites(token,inviter_id,code) VALUES($1,$2,$3)
             ON CONFLICT(inviter_id,code) DO NOTHING""",token,c.from_user.id,row["code"])
         token=await p.fetchval("SELECT token FROM free_code_invites WHERE inviter_id=$1 AND code=$2",c.from_user.id,row["code"])
-    count=int(await p.fetchval("SELECT COUNT(*) FROM free_code_referrals WHERE invite_token=$1",token) or 0)
+    from utils.free_referral import free_code_referral_progress
+    count, _ = await free_code_referral_progress(c.from_user.id, row["code"])
     from utils.bot_identity import get_bot_username
     botname=await get_bot_username(); share_url=f"https://t.me/{botname}?start=ref_{token}" if botname else ""
     bar="🟩"*min(count,5)+"⬜"*(5-min(count,5))
@@ -851,9 +852,11 @@ async def free_code_task(c):
 @router.callback_query(F.data.startswith("freeopen:"))
 async def free_code_open(c):
     code=c.data.split(":",1)[1]; p=await get_pool()
-    token=await p.fetchval("SELECT token FROM free_code_invites WHERE inviter_id=$1 AND code=$2",c.from_user.id,code)
-    count=int(await p.fetchval("SELECT COUNT(*) FROM free_code_referrals WHERE invite_token=$1",token) or 0) if token else 0
-    if count<5: return await c.answer("Undang 5 orang berbeda yang benar-benar menekan Start terlebih dahulu.",show_alert=True)
+    from utils.free_referral import free_code_referral_progress
+    from utils.admin_access import admin_access
+    count, token = await free_code_referral_progress(c.from_user.id, code)
+    if count<5 and not await admin_access(c.from_user.id):
+        return await c.answer("Undang 5 orang berbeda yang benar-benar menekan Start terlebih dahulu.",show_alert=True)
     from handlers.getfile import show
     await c.answer("Tugas selesai!")
     await show(c.message,code,user_id=c.from_user.id)

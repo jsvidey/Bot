@@ -668,6 +668,18 @@ async def openfree(c):
     if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
     if int(f['owner_id'])==int(c.from_user.id):
         return await c.answer('Gunakan tombol buka code milik sendiri.',show_alert=True)
+    # Every free-code opening path must enforce the same 5-new-user referral task.
+    if int(f['price_idr'] or 0) <= 0 and str(f['access_mode'] or 'all').lower() != 'vip':
+        from utils.admin_access import admin_access
+        is_admin_user = await admin_access(c.from_user.id)
+        if not is_admin_user:
+            from utils.free_referral import free_code_referral_progress
+            referral_count, _ = await free_code_referral_progress(c.from_user.id, code)
+            if referral_count < 5:
+                return await c.answer(
+                    f'🔒 Free Code terkunci. Undang 5 pengguna baru yang belum pernah menekan Start. Progress: {referral_count}/5. Buka menu 🎁 Ambil Code Free untuk mendapatkan link undangan.',
+                    show_alert=True,
+                )
     access_mode=str(f['access_mode'] or 'all').lower()
     if access_mode=='vip' and not await is_vip(c.from_user.id):
         return await c.answer('Code ini khusus member VIP.',show_alert=True)
