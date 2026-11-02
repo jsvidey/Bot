@@ -129,7 +129,7 @@ async def show(m,code,user_id=None):
         # Review is intentionally free. Show one review/preview item plus a clear
         # notification and inline actions; never send the complete paid media here.
         kb=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='🛒 Minat? Lanjut Buy Sekarang' if lang=='id' else '🛒 Interested? Buy Now',callback_data=f'getcode:{canonical}')],
+            [InlineKeyboardButton(text='📽️ Buka Media' if lang=='id' else '📽️ Open Media',callback_data=f'getcode:{canonical}')],
             [InlineKeyboardButton(text='🔎 Cari Code Lain' if lang=='id' else '🔎 Find Another Code',callback_data='getfile')],
             [InlineKeyboardButton(text='❌ Batal',callback_data='home')],
         ])
@@ -422,7 +422,7 @@ async def send_page(bot, chat_id, code, media, page, access_expires_at=None, per
                 f"📁 Media {i}/{total}\n"
                 f"🤖 Bot: @{html.escape(await __import__('utils.bot_identity', fromlist=['get_bot_username']).get_bot_username())}\n"
                 f"📢 Channel: <a href=\"{html.escape(str(ALL_CODE_CHANNEL_URL), quote=True)}\">Update</a>\n"
-                f"🛠 <a href=\"https://t.me/+ezE2-f-YtEo4NzU1\">Pembuatan Bot dan Website</a>"
+                f"🛠 <a href=\"https://t.me/botstips\">Channel Backup</a>"
             )
             custom_watermark = await pool.fetchval("SELECT value FROM settings WHERE key='watermark_text'")
             if custom_watermark and str(custom_watermark).strip():
