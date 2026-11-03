@@ -1,4 +1,5 @@
 from aiogram import Router, F
+import logging
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -11,6 +12,7 @@ from utils.i18n import get_lang, set_lang, SUPPORTED
 from utils.admin_access import admin_access
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 WELCOME = {
     "id": (
@@ -112,33 +114,91 @@ async def show_welcome(target, user, lang, edit=False, show_channels=True):
 
 @router.message(F.chat.type == "private", CommandStart())
 async def start(m: Message):
-    p = await get_pool()
-    parts = (m.text or "").split(maxsplit=1)
-    payload = parts[1].strip() if len(parts) == 2 else ""
-    is_referral_start = payload.startswith("ref_")
-    # Check existence BEFORE ensure_user inserts/updates the account. Existing
-    # bot users must never be counted as newly invited referrals.
-    existing_user = await p.fetchval("SELECT 1 FROM users WHERE user_id=$1", m.from_user.id)
-    await ensure_user(m.from_user.id, m.from_user.username, m.from_user.full_name)
-    if not existing_user and is_referral_start:
-        token = payload[4:].strip()
-        invite = await p.fetchrow("SELECT inviter_id FROM free_code_invites WHERE token=$1", token) if token else None
-        if invite and int(invite["inviter_id"]) != int(m.from_user.id):
-            await p.execute("""INSERT INTO free_code_referrals(invite_token,invited_user_id)
-                VALUES($1,$2) ON CONFLICT(invited_user_id) DO NOTHING""", token, m.from_user.id)
-    await p.execute("UPDATE users SET bot_started_at=COALESCE(bot_started_at,NOW()) WHERE user_id=$1", m.from_user.id)
-    if not await subscription_prompt(m.bot, m.chat.id, m.from_user.id):
-        return
-    lang = await get_lang(m.from_user.id)
-    parts = (m.text or "").split(maxsplit=1)
-    if not lang:
-        pending = payload if payload and not is_referral_start else None
-        await p.execute("UPDATE users SET pending_start_code=$1 WHERE user_id=$2", pending, m.from_user.id)
-        return await language_prompt(m)
-    if payload and not is_referral_start:
-        from handlers.getfile import show
-        return await show(m, payload)
-    await show_welcome(m, m.from_user, lang)
+    """Handle /start and Telegram deep links such as /start JSShow_xxx.
+
+    A deep-link must never fail silently: database or code lookup failures are
+    logged and a short user-facing message is returned.
+    """
+    payload = ""
+    try:
+        parts = (m.text or "").strip().split(maxsplit=1)
+        payload = parts[1].strip() if len(parts) == 2 else ""
+        is_referral_start = payload.startswith("ref_")
+
+        # Acknowledge deep-link opens quickly so the user can see that the bot
+        # received the payload, even if database lookups take a moment.
+        if payload and not is_referral_start:
+            try:
+                await m.bot.send_chat_action(m.chat.id, "typing")
+            except Exception:
+                pass
+
+        p = await get_pool()
+        existing_user = await p.fetchval(
+            "SELECT 1 FROM users WHERE user_id=$1", m.from_user.id
+        )
+        await ensure_user(m.from_user.id, m.from_user.username, m.from_user.full_name)
+
+        if not existing_user and is_referral_start:
+            token = payload[4:].strip()
+            invite = await p.fetchrow(
+                "SELECT inviter_id FROM free_code_invites WHERE token=$1", token
+            ) if token else None
+            if invite and int(invite["inviter_id"]) != int(m.from_user.id):
+                await p.execute(
+                    """INSERT INTO free_code_referrals(invite_token,invited_user_id)
+                       VALUES($1,$2) ON CONFLICT(invited_user_id) DO NOTHING""",
+                    token, m.from_user.id
+                )
+
+        await p.execute(
+            "UPDATE users SET bot_started_at=COALESCE(bot_started_at,NOW()) WHERE user_id=$1",
+            m.from_user.id
+        )
+
+        if not await subscription_prompt(m.bot, m.chat.id, m.from_user.id):
+            return
+
+        lang = await get_lang(m.from_user.id)
+        if not lang:
+            pending = payload if payload and not is_referral_start else None
+            await p.execute(
+                "UPDATE users SET pending_start_code=$1 WHERE user_id=$2",
+                pending, m.from_user.id
+            )
+            return await language_prompt(m)
+
+        if payload and not is_referral_start:
+            from handlers.getfile import show
+            try:
+                return await show(m, payload)
+            except Exception:
+                logger.exception(
+                    "Deep-link code open failed: user_id=%s payload=%s",
+                    m.from_user.id, payload
+                )
+                return await m.answer(
+                    "⚠️ <b>Code diterima, tetapi gagal dibuka.</b>\\n"
+                    "Silakan coba lagi dengan menekan link sekali lagi. "
+                    "Jika tetap gagal, hubungi admin.",
+                    parse_mode="HTML"
+                )
+
+        return await show_welcome(m, m.from_user, lang)
+
+    except Exception:
+        logger.exception(
+            "Start handler failed: user_id=%s payload=%s",
+            getattr(getattr(m, "from_user", None), "id", None), payload
+        )
+        try:
+            await m.answer(
+                "⚠️ <b>Bot menerima perintah, tetapi sedang mengalami kendala.</b>\\n"
+                "Silakan coba /start beberapa saat lagi. Jika masih sama, hubungi admin.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
 
 @router.callback_query(F.data.startswith("lang:"))
 async def choose_language(c: CallbackQuery):
