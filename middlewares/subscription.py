@@ -110,6 +110,14 @@ class SubscriptionMiddleware(BaseMiddleware):
             elif isinstance(event, CallbackQuery):
                 if event.data != "verify_join" and not str(event.data or "").startswith("lang:"):
                     return await handler(event,data)
+        # /start must reach the start handler first. That handler persists a
+        # deep-link payload before showing the force-join prompt, so the code
+        # is not lost when a user has not joined the required channels yet.
+        if isinstance(event, Message):
+            token = (event.text or "").strip().split()[0].lower() if event.text else ""
+            if token.split("@", 1)[0] == "/start":
+                return await handler(event, data)
+
         # Enforce admin bans for all ordinary user traffic.
         try:
             from database import get_pool
