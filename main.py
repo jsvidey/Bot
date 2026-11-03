@@ -14,14 +14,24 @@ from tasks.subscription_worker import worker as subscription_worker
 logging.basicConfig(level=logging.INFO,format='%(asctime)s | %(levelname)s | %(message)s')
 @asynccontextmanager
 async def lifespan(app):
+ # Fail loudly during startup when the deployment points to the wrong bot.
  await get_pool(); await init_db(); await b2_pool.reload_from_db()
- # Automatically detect the username belonging to the currently deployed BOT_TOKEN.
- # This replaces any stale username left by previously banned/replaced bots.
  from utils.bot_identity import refresh_bot_identity
- # Remove a webhook left on this token; polling cannot receive updates while webhook is active.
- await bot.delete_webhook(drop_pending_updates=False)
  active_username = await refresh_bot_identity(bot)
- logging.info("Active Telegram bot identity: @%s (loaded from current BOT_TOKEN)", active_username)
+ expected_username = __import__("os").getenv("EXPECTED_BOT_USERNAME", "Boxcellbot").strip().lstrip("@")
+ logging.info("Telegram token authenticated as @%s", active_username)
+ if expected_username and active_username.lower() != expected_username.lower():
+  raise RuntimeError(
+   f"BOT_TOKEN belongs to @{active_username}, expected @{expected_username}. "
+   "Update BOT_TOKEN in Railway Variables with the token from @BotFather for the new bot."
+  )
+ # A previous webhook prevents getUpdates polling (Telegram returns 409 Conflict).
+ # Keep queued updates so the user's /start deep-link is not discarded.
+ webhook = await bot.get_webhook_info()
+ if webhook.url:
+  logging.warning("Removing existing Telegram webhook before polling: %s", webhook.url)
+ await bot.delete_webhook(drop_pending_updates=False)
+ logging.info("Webhook cleared; starting polling for @%s", active_username)
  try:
   await bot.set_my_commands([
    BotCommand(command="start", description="Mulai / Start bot"),
@@ -47,22 +57,47 @@ async def lifespan(app):
    BotCommand(command="search", description="Search for a Code"),
    BotCommand(command="setting", description="Language settings"),
   ], language_code="en")
- except Exception as e:
-  logging.warning("Could not register bot commands: %s", e)
- p=await get_pool();
- try: ADMIN_IDS.update(set(int(r['user_id']) for r in await p.fetch('SELECT user_id FROM users WHERE is_admin=TRUE') if int(r['user_id'])!=0))
- except Exception: pass
- async def _run_polling():
-  try:
-   logging.info("Starting Telegram polling for @%s", active_username)
-   await dp.start_polling(bot, handle_signals=False, close_bot_session=False)
-  except Exception:
-   logging.exception("Telegram polling stopped unexpectedly for @%s", active_username)
-   raise
- tasks=[asyncio.create_task(_run_polling(),name="telegram-polling"),asyncio.create_task(payment_worker()),asyncio.create_task(expiry_worker()),asyncio.create_task(subscription_worker())]
- yield
- for t in tasks:t.cancel()
- await close_db(); await bot.session.close()
+ except Exception:
+  logging.exception("Could not register bot commands")
+ p=await get_pool()
+ try:
+  ADMIN_IDS.update(set(int(r['user_id']) for r in await p.fetch('SELECT user_id FROM users WHERE is_admin=TRUE') if int(r['user_id'])!=0))
+ except Exception:
+  logging.exception("Could not load database admins")
+
+ async def run_polling():
+  logging.info("Polling task is now active for @%s", active_username)
+  await dp.start_polling(
+   bot,
+   allowed_updates=dp.resolve_used_update_types(),
+   close_bot_session=False,
+  )
+  logging.error("Telegram polling stopped unexpectedly for @%s", active_username)
+
+ def task_finished(task):
+  if task.cancelled():
+   return
+  exc=task.exception()
+  if exc:
+   logging.critical("Background task %s crashed", task.get_name(), exc_info=(type(exc), exc, exc.__traceback__))
+
+ tasks=[
+  asyncio.create_task(run_polling(), name="telegram-polling"),
+  asyncio.create_task(payment_worker(), name="payment-worker"),
+  asyncio.create_task(expiry_worker(), name="expiry-worker"),
+  asyncio.create_task(subscription_worker(), name="subscription-worker"),
+ ]
+ for task in tasks:
+  task.add_done_callback(task_finished)
+ try:
+  yield
+ finally:
+  for task in tasks:
+   task.cancel()
+  await asyncio.gather(*tasks, return_exceptions=True)
+  await close_db()
+  await bot.session.close()
+
 app=FastAPI(lifespan=lifespan); app.include_router(bayar); app.include_router(cashi)
 @app.get('/')
 async def root():return {'status':'running'}
