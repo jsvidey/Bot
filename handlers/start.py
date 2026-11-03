@@ -179,23 +179,38 @@ async def start(m: Message):
 
         if payload and not is_referral_start:
             from handlers.getfile import show
+            status = None
             try:
                 await p.execute(
                     "UPDATE users SET pending_start_code=NULL WHERE user_id=$1",
                     m.from_user.id
                 )
-                return await show(m, payload)
+                status = await m.answer("⏳ Kode diterima, sedang dibuka...")
+                result = await show(m, payload)
+                if status:
+                    try: await status.delete()
+                    except Exception: pass
+                logger.info(
+                    "Deep-link response completed: user_id=%s payload=%s result_message_id=%s",
+                    m.from_user.id, payload, getattr(result, "message_id", None)
+                )
+                return result
             except Exception:
                 logger.exception(
                     "Deep-link code open failed: user_id=%s payload=%s",
                     m.from_user.id, payload
                 )
-                return await m.answer(
-                    "⚠️ <b>Code diterima, tetapi gagal dibuka.</b>\\n"
-                    "Silakan coba lagi dengan menekan link sekali lagi. "
-                    "Jika tetap gagal, hubungi admin.",
-                    parse_mode="HTML"
+                error_text = (
+                    "⚠️ <b>Code ditemukan, tetapi gagal ditampilkan.</b>\n"
+                    "Silakan coba lagi. Jika masih gagal, hubungi admin."
                 )
+                try:
+                    if status:
+                        return await status.edit_text(error_text, parse_mode="HTML")
+                    return await m.answer(error_text, parse_mode="HTML")
+                except Exception:
+                    logger.exception("Could not send deep-link failure notice: user_id=%s", m.from_user.id)
+                    raise
 
         return await show_welcome(m, m.from_user, lang)
 

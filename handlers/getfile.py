@@ -122,17 +122,27 @@ async def has_permanent_access(uid,code):
     return bool(await p.fetchval("""SELECT 1 FROM unlock_transactions WHERE user_id=$1 AND code=$2
         AND payment_type='admin' AND expires_at>NOW() ORDER BY id DESC LIMIT 1""",uid,code))
 
-async def show(m,code,user_id=None):
+async def _show_impl(m,code,user_id=None):
+    import logging
+    log = logging.getLogger(__name__)
     uid=int(user_id or m.from_user.id)
+    log.info("SHOW begin: user_id=%s chat_id=%s code=%s", uid, m.chat.id, str(code)[:80])
     f=await get_file(code)
-    if not f:return await m.answer(_L(await _lang(uid),'invalid_code'))
+    if not f:
+        log.warning("SHOW code not found: user_id=%s code=%s", uid, str(code)[:80])
+        return await m.answer(_L(await _lang(uid),'invalid_code'))
+    log.info("SHOW row loaded: user_id=%s file_id=%s canonical=%s", uid, f['id'], str(f['code'])[:80])
     p=await get_pool()
     canonical=str(f['code'])
     await p.execute("UPDATE files SET views=views+1 WHERE code=$1", canonical)
+    log.info("SHOW views updated: file_id=%s", f['id'])
     stats=await p.fetchrow("""SELECT views,likes,hates,favorites FROM files WHERE id=$1""",f['id'])
+    if not stats:
+        raise RuntimeError(f"File stats row missing for file_id={f['id']}")
     price=int(f['price_idr'] or 0)
     paid=f"💰 Harga: <b>{fmt(price)}</b>" if price else "🆓 FREE CODE"
     lang=await _lang(uid)
+    log.info("SHOW prepared: user_id=%s file_id=%s lang=%s", uid, f['id'], lang)
     review_code = str(f['review_code'] or '')
     if review_code and str(code).lower() in {review_code.lower(), canonical.lower()}:
         # Review is intentionally free. Show one review/preview item plus a clear
@@ -210,12 +220,57 @@ async def show(m,code,user_id=None):
                     continue
     except Exception:
         pass
-    await m.answer(
+    log.info("SHOW sending summary: user_id=%s file_id=%s", uid, f['id'])
+    sent = await m.answer(
       f"📦 <b>{html.escape(f['title'] or 'Untitled')}</b>\n\n"
       f"🔑 <code>{html.escape(canonical)}</code>\n{paid}\n"
       f"👁 Views: <b>{stats['views']}</b>  👍 <b>{stats['likes']}</b>  👎 <b>{stats['hates']}</b>  ⭐ <b>{stats['favorites']}</b>\n\n"
       f"Bagikan code ini ke teman-teman untuk membuka media ini.",
       parse_mode='HTML',reply_markup=await code_info_kb(canonical,f['title'] or 'Code',lang))
+    log.info("SHOW message sent: user_id=%s file_id=%s message_id=%s", uid, f['id'], getattr(sent, 'message_id', None))
+    return sent
+
+
+async def show(m, code, user_id=None):
+    """One visible, shared entry point for direct codes, Getfile and deep links."""
+    import logging
+    log = logging.getLogger(__name__)
+    uid = int(user_id or m.from_user.id)
+    status = None
+    try:
+        # Send a visible acknowledgement BEFORE any database/storage work.
+        status = await m.bot.send_message(
+            m.chat.id,
+            "⏳ Kode diterima. Sedang memeriksa dan menyiapkan konten..."
+        )
+        log.info("SHOW wrapper acknowledged: user_id=%s chat_id=%s code=%s status_message_id=%s",
+                 uid, m.chat.id, str(code)[:80], getattr(status, "message_id", None))
+        result = await _show_impl(m, code, user_id=uid)
+        log.info("SHOW wrapper completed: user_id=%s code=%s result_type=%s",
+                 uid, str(code)[:80], type(result).__name__ if result is not None else "None")
+        if status:
+            try:
+                await status.delete()
+            except Exception:
+                pass
+        return result
+    except Exception as exc:
+        log.exception("SHOW wrapper failed: user_id=%s chat_id=%s code=%s",
+                      uid, m.chat.id, str(code)[:80])
+        notice = ("⚠️ Kode berhasil diterima, tetapi konten gagal ditampilkan. "
+                  "Admin perlu memeriksa log bot.")
+        if status:
+            try:
+                await status.edit_text(notice)
+                return None
+            except Exception:
+                pass
+        try:
+            await m.bot.send_message(m.chat.id, notice)
+        except Exception:
+            log.exception("SHOW wrapper could not send failure notice: user_id=%s", uid)
+        return None
+
 
 async def show_server_catalog(target):
     p=await get_pool()
@@ -286,12 +341,23 @@ _CODE_RE = re.compile(r'^(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,
 
 @router.message(F.chat.type == 'private', F.text.regexp(re.compile(r'^`?(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,40}|[^\s_]+_[^\s_]+_\d+p\d+v\d+d)`?$', re.IGNORECASE)))
 async def receive(m):
+    import logging
+    log = logging.getLogger(__name__)
     raw=(m.text or '').strip()
-    # Users often paste a code wrapped in backticks or with whitespace.
     code=raw.strip('`').strip()
     if not _CODE_RE.fullmatch(code):
-        return
-    await show(m,code)
+        return await m.answer(_L(await _lang(m.from_user.id), 'invalid_code'))
+    log.info("DIRECT CODE received: user_id=%s code=%s", m.from_user.id, code[:80])
+    try:
+        await show(m,code)
+        log.info("DIRECT CODE flow completed: user_id=%s code=%s", m.from_user.id, code[:80])
+    except Exception:
+        log.exception("DIRECT CODE flow failed: user_id=%s code=%s", m.from_user.id, code[:80])
+        try:
+            await m.answer("⚠️ Kode diterima, tetapi gagal diproses. Admin perlu memeriksa log bot.")
+        except Exception:
+            log.exception("Could not send direct-code failure notice: user_id=%s", m.from_user.id)
+
 
 @router.callback_query(F.data.startswith('getreview:'))
 async def getreview(c):
