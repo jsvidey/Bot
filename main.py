@@ -18,6 +18,8 @@ async def lifespan(app):
  # Automatically detect the username belonging to the currently deployed BOT_TOKEN.
  # This replaces any stale username left by previously banned/replaced bots.
  from utils.bot_identity import refresh_bot_identity
+ # Remove a webhook left on this token; polling cannot receive updates while webhook is active.
+ await bot.delete_webhook(drop_pending_updates=False)
  active_username = await refresh_bot_identity(bot)
  logging.info("Active Telegram bot identity: @%s (loaded from current BOT_TOKEN)", active_username)
  try:
@@ -50,7 +52,14 @@ async def lifespan(app):
  p=await get_pool();
  try: ADMIN_IDS.update(set(int(r['user_id']) for r in await p.fetch('SELECT user_id FROM users WHERE is_admin=TRUE') if int(r['user_id'])!=0))
  except Exception: pass
- tasks=[asyncio.create_task(dp.start_polling(bot)),asyncio.create_task(payment_worker()),asyncio.create_task(expiry_worker()),asyncio.create_task(subscription_worker())]
+ async def _run_polling():
+  try:
+   logging.info("Starting Telegram polling for @%s", active_username)
+   await dp.start_polling(bot, handle_signals=False, close_bot_session=False)
+  except Exception:
+   logging.exception("Telegram polling stopped unexpectedly for @%s", active_username)
+   raise
+ tasks=[asyncio.create_task(_run_polling(),name="telegram-polling"),asyncio.create_task(payment_worker()),asyncio.create_task(expiry_worker()),asyncio.create_task(subscription_worker())]
  yield
  for t in tasks:t.cancel()
  await close_db(); await bot.session.close()

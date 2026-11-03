@@ -72,7 +72,7 @@ async def init_db():
     INSERT INTO settings(key,value) VALUES
       ('payment_bayargg_enabled','on'),('payment_cashi_enabled','on'),
       ('payment_manual_enabled','on'),
-      ('bot_username','JsShowfileebot'),
+      ('bot_username','Boxcellbot'),
       ('maintenance','off'),
       ('vip_code_delay_minutes','30'),('vvip_code_delay_minutes','15'),('media_send_delay_ms','2000'),('vip_media_send_delay_ms','2000'),('vvip_media_send_delay_ms','1000'),
       ('manual_qr_file_id',''),('preferred_b2_account','0'),('default_watermark_enabled','on'),('watermark_text',''),('admin_chat_enabled','on'),('vip_channels_json',''),('vip_updates_url','https://t.me/+ezE2-f-YtEo4NzU1')
