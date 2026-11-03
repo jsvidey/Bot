@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime,timedelta,timezone
-import html,json,os,tempfile,asyncio,re
+import html,json,os,tempfile,asyncio,re,logging
 from aiogram import Router,F
 from aiogram.types import Message,CallbackQuery,InlineKeyboardMarkup,InlineKeyboardButton,InputMediaPhoto,InputMediaVideo,InputMediaDocument,InputMediaAudio,BufferedInputFile
 from database import get_pool
@@ -14,6 +14,7 @@ from config import MEDIA_SEND_DELAY_MS,BOT_USERNAME
 from utils.payments import create_purchase,qr_bytes,enabled
 from handlers.payments import ManualProofState
 router=Router()
+logger=logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 3-LANGUAGE USER TEXT
@@ -275,14 +276,22 @@ async def catalog_noop(c): await c.answer()
 # ``<p>p<v>v<d>d`` and ignore accidental spaces/backticks around the code.
 _CODE_RE = re.compile(r'^(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,40}|[^\s_]+_[^\s_]+_\d+p\d+v\d+d)$', re.I)
 
-@router.message(F.chat.type == 'private', F.text.regexp(re.compile(r'^`?(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,40}|[^\s_]+_[^\s_]+_\d+p\d+v\d+d)`?$', re.IGNORECASE)))
-async def receive(m):
+@router.message(F.chat.type == 'private', F.text.regexp(re.compile(r'^\s*`?\s*(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,40}|[^\s_]+_[^\s_]+_\d+p\d+v\d+d)\s*`?\s*$', re.IGNORECASE)))
+async def receive(m: Message):
     raw=(m.text or '').strip()
-    # Users often paste a code wrapped in backticks or with whitespace.
-    code=raw.strip('`').strip()
+    code=raw.strip().strip('`').strip()
     if not _CODE_RE.fullmatch(code):
-        return
-    await show(m,code)
+        return await m.answer(_L(await _lang(m.from_user.id),'invalid_code'))
+    try:
+        logger.info("Direct code received: user_id=%s code=%s", m.from_user.id, code)
+        f=await get_file(code)
+        if not f:
+            logger.warning("Direct code not found or inactive: user_id=%s code=%s", m.from_user.id, code)
+            return await m.answer(_L(await _lang(m.from_user.id),'not_found'))
+        await show(m,code,user_id=m.from_user.id)
+    except Exception:
+        logger.exception("Direct code handler failed: user_id=%s code=%s", m.from_user.id, code)
+        return await m.answer("⚠️ Code diterima, tetapi gagal diproses. Silakan coba lagi atau hubungi admin.")
 
 @router.callback_query(F.data.startswith('getreview:'))
 async def getreview(c):
