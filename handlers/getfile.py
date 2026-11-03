@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime,timedelta,timezone
-import html,json,os,tempfile,asyncio,re,logging
+import html,json,os,tempfile,asyncio,re
 from aiogram import Router,F
 from aiogram.types import Message,CallbackQuery,InlineKeyboardMarkup,InlineKeyboardButton,InputMediaPhoto,InputMediaVideo,InputMediaDocument,InputMediaAudio,BufferedInputFile
 from database import get_pool
@@ -14,7 +14,6 @@ from config import MEDIA_SEND_DELAY_MS,BOT_USERNAME
 from utils.payments import create_purchase,qr_bytes,enabled
 from handlers.payments import ManualProofState
 router=Router()
-logger=logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 3-LANGUAGE USER TEXT
@@ -102,7 +101,16 @@ async def code_info_kb(code,title='Code',lang='id'):
     ])
 
 async def get_file(code):
-    return await (await get_pool()).fetchrow("SELECT * FROM files WHERE (lower(code)=lower($1) OR lower(review_code)=lower($1)) AND active=TRUE",code)
+    # Log lookup outcome without exposing media contents or credentials.
+    row = await (await get_pool()).fetchrow(
+        "SELECT * FROM files WHERE (lower(code)=lower($1) OR lower(review_code)=lower($1)) AND active=TRUE",
+        str(code).strip(),
+    )
+    import logging
+    logging.getLogger(__name__).info(
+        "Code lookup: code=%s found=%s", str(code)[:80], bool(row)
+    )
+    return row
 
 async def has_permanent_or_paid_unlock(uid,code):
     p=await get_pool()
@@ -276,22 +284,14 @@ async def catalog_noop(c): await c.answer()
 # ``<p>p<v>v<d>d`` and ignore accidental spaces/backticks around the code.
 _CODE_RE = re.compile(r'^(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,40}|[^\s_]+_[^\s_]+_\d+p\d+v\d+d)$', re.I)
 
-@router.message(F.chat.type == 'private', F.text.regexp(re.compile(r'^\s*`?\s*(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,40}|[^\s_]+_[^\s_]+_\d+p\d+v\d+d)\s*`?\s*$', re.IGNORECASE)))
-async def receive(m: Message):
+@router.message(F.chat.type == 'private', F.text.regexp(re.compile(r'^`?(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,40}|[^\s_]+_[^\s_]+_\d+p\d+v\d+d)`?$', re.IGNORECASE)))
+async def receive(m):
     raw=(m.text or '').strip()
-    code=raw.strip().strip('`').strip()
+    # Users often paste a code wrapped in backticks or with whitespace.
+    code=raw.strip('`').strip()
     if not _CODE_RE.fullmatch(code):
-        return await m.answer(_L(await _lang(m.from_user.id),'invalid_code'))
-    try:
-        logger.info("Direct code received: user_id=%s code=%s", m.from_user.id, code)
-        f=await get_file(code)
-        if not f:
-            logger.warning("Direct code not found or inactive: user_id=%s code=%s", m.from_user.id, code)
-            return await m.answer(_L(await _lang(m.from_user.id),'not_found'))
-        await show(m,code,user_id=m.from_user.id)
-    except Exception:
-        logger.exception("Direct code handler failed: user_id=%s code=%s", m.from_user.id, code)
-        return await m.answer("⚠️ Code diterima, tetapi gagal diproses. Silakan coba lagi atau hubungi admin.")
+        return
+    await show(m,code)
 
 @router.callback_query(F.data.startswith('getreview:'))
 async def getreview(c):

@@ -112,7 +112,7 @@ async def show_welcome(target, user, lang, edit=False, show_channels=True):
     except Exception:
         pass
 
-@router.message(F.chat.type == "private", CommandStart())
+@router.message(F.chat.type == "private", CommandStart(deep_link=True))
 async def start(m: Message):
     """Handle /start and Telegram deep links such as /start JSShow_xxx.
 
@@ -120,6 +120,7 @@ async def start(m: Message):
     logged and a short user-facing message is returned.
     """
     payload = ""
+    logger.info("Incoming /start update: user_id=%s chat_id=%s text=%r", m.from_user.id, m.chat.id, m.text)
     try:
         parts = (m.text or "").strip().split(maxsplit=1)
         payload = parts[1].strip() if len(parts) == 2 else ""
