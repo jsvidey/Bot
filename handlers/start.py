@@ -156,6 +156,14 @@ async def start(m: Message):
             m.from_user.id
         )
 
+        # Save the deep-link code BEFORE force-join validation. If the user
+        # must join channels first, verify_join/language selection can resume it.
+        if payload and not is_referral_start:
+            await p.execute(
+                "UPDATE users SET pending_start_code=$1 WHERE user_id=$2",
+                payload, m.from_user.id
+            )
+
         if not await subscription_prompt(m.bot, m.chat.id, m.from_user.id):
             return
 
@@ -171,6 +179,10 @@ async def start(m: Message):
         if payload and not is_referral_start:
             from handlers.getfile import show
             try:
+                await p.execute(
+                    "UPDATE users SET pending_start_code=NULL WHERE user_id=$1",
+                    m.from_user.id
+                )
                 return await show(m, payload)
             except Exception:
                 logger.exception(
@@ -219,7 +231,7 @@ async def choose_language(c: CallbackQuery):
     await c.answer()
     if pending:
         from handlers.getfile import show
-        return await show(c.message, pending)
+        return await show(c.message, pending, user_id=c.from_user.id)
     await show_welcome(c.message, c.from_user, lang, edit=True)
 
 @router.message(F.chat.type == "private", F.text.in_({"📣 Channel Admin", "📣 Admin Channel"}))
@@ -347,10 +359,22 @@ async def verify_join(c: CallbackQuery):
     if not await subscription_prompt(c.bot, c.from_user.id, c.from_user.id):
         return await c.answer("Please join both channels first.", show_alert=True)
     await ensure_user(c.from_user.id, c.from_user.username, c.from_user.full_name)
+    p = await get_pool()
+    pending = await p.fetchval(
+        "SELECT pending_start_code FROM users WHERE user_id=$1",
+        c.from_user.id
+    )
     lang = await get_lang(c.from_user.id)
     await c.answer()
     if not lang:
         return await language_prompt(c.message, edit=True)
+    if pending:
+        await p.execute(
+            "UPDATE users SET pending_start_code=NULL WHERE user_id=$1",
+            c.from_user.id
+        )
+        from handlers.getfile import show
+        return await show(c.message, pending, user_id=c.from_user.id)
     await show_welcome(c.message, c.from_user, lang, edit=True)
 
 @router.callback_query(F.data == "review")
