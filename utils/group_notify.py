@@ -1,7 +1,7 @@
 from __future__ import annotations
 import html
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from config import CODE_GROUP_ID
+from config import CODE_GROUP_ID, BOT_USERNAME
 
 def code_url(code: str) -> str:
     return f"https://t.me/{BOT_USERNAME}?start={code}"
