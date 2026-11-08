@@ -1,77 +1,518 @@
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
 
-def env_int(name, default=0):
-    try: return int(str(os.getenv(name, default)).strip())
-    except Exception: return default
 
-def env_bool(name, default=False):
-    return str(os.getenv(name, str(default))).strip().lower() in {"1","true","yes","on"}
+# ============================================================
+# GENERAL
+# ============================================================
 
-BOT_TOKEN=os.getenv("BOT_TOKEN","").strip()
-BOT_USERNAME=os.getenv("BOT_USERNAME","").lstrip("@").strip()
-# Optional Local Bot API Server. Required for Telegram-origin files above ~20 MB.
-# Example: http://telegram-bot-api:8081 or http://127.0.0.1:8081
-TELEGRAM_API_BASE=os.getenv("TELEGRAM_API_BASE","").strip().rstrip("/")
-MAX_MEDIA_SIZE_MB=max(env_int("MAX_MEDIA_SIZE_MB",100),1)
-MAX_MEDIA_SIZE_BYTES=MAX_MEDIA_SIZE_MB*1024*1024
-DATABASE_URL=os.getenv("DATABASE_URL","").strip()
-PUBLIC_BASE_URL=os.getenv("PUBLIC_BASE_URL","").strip().rstrip("/")
-OWNER_ID=env_int("OWNER_ID")
-def _env_ids(*names):
-    out=set()
-    for name in names:
-        for x in os.getenv(name, "").replace(";", ",").split(","):
-            x=x.strip()
-            if x.lstrip("-").isdigit(): out.add(int(x))
-    return {x for x in out if x != 0}
+TIMEZONE = "Asia/Jakarta"
 
-ADMIN_IDS=_env_ids("ADMIN_IDS","ADMINS","OWNER_IDS","OWNER_ID")
-NOTIF_CHANNEL_ID=env_int("NOTIF_CHANNEL_ID")
-# Mandatory subscription channels. If IDs are empty, that channel is skipped.
-FORCE_CHANNEL_ID=env_int("FORCE_CHANNEL_ID", env_int("FORCE_CHANNEL", 0))
-NOTICE_SUB_CHANNEL_ID=env_int("NOTICE_SUB_CHANNEL_ID", env_int("NOTICE_CHANNEL_ID", 0))
-FORCE_CHANNEL_URL=os.getenv("FORCE_CHANNEL_URL","https://t.me/noticsaluran").strip()
-NOTICE_SUB_CHANNEL_URL=os.getenv("NOTICE_SUB_CHANNEL_URL","https://t.me/channeljsshow").strip()
-FORCE_CHANNEL_USERNAME=os.getenv("FORCE_CHANNEL_USERNAME","noticsaluran").strip().lstrip("@")
-NOTICE_SUB_CHANNEL_USERNAME=os.getenv("NOTICE_SUB_CHANNEL_USERNAME","channeljsshow").strip().lstrip("@")
-CODE_GROUP_ID=env_int("CODE_GROUP_ID")
-CODE_GROUP_URL="https://t.me/+WeFUnjG8ojQzOWQ5"
-CODE_GROUP_TITLE=os.getenv("CODE_GROUP_TITLE","Group Chat Code").strip() or "Group Chat Code"
-NOTICE_CHANNEL_URL="https://t.me/noticsaluran"
-ALL_CODE_CHANNEL_URL="https://t.me/+NrHk5eHAiTFiNzc1"
-BACKUP_CHANNEL_URL="https://t.me/+g3t3JY6ft8xhYTE1"
 
-TRANSACTION_CHANNEL_URL=os.getenv("TRANSACTION_CHANNEL_URL","https://t.me/+8NajMZzycUE2NGE1").strip()
-# Telegram Bot API needs a chat/channel ID (or public @username) to actually post.
-# The private invite URL above is kept for user-facing links; configure this ID in Railway.
-TRANSACTION_CHAT_ID=os.getenv("TRANSACTION_CHAT_ID","").strip()
-ERROR_NOTICE_CHAT_ID=os.getenv("ERROR_NOTICE_CHAT_ID","@noticsaluran").strip()
-TIMEZONE="Asia/Jakarta"
+# ============================================================
+# BOT
+# ============================================================
 
-# Payments
-BAYARGG_API_KEY=os.getenv("BAYARGG_API_KEY","").strip()
-BAYARGG_SECRET=os.getenv("BAYARGG_SECRET","").strip()
-BAYARGG_WEBHOOK_SECRET=os.getenv("BAYARGG_WEBHOOK_SECRET","").strip()
-BAYARGG_BASE_URL=os.getenv("BAYARGG_BASE_URL","https://www.bayar.gg/api").strip().rstrip("/")
-BAYARGG_WEBHOOK_URL=f"{PUBLIC_BASE_URL}/bayargg/webhook" if PUBLIC_BASE_URL else ""
-CASHI_API_KEY=os.getenv("CASHI_API_KEY","").strip()
-CASHI_SECRET_KEY=os.getenv("CASHI_SECRET_KEY","").strip()
-CASHI_BASE_URL=os.getenv("CASHI_BASE_URL","https://cashi.id").strip().rstrip("/")
-CASHI_PAYMENT_CHANNEL=os.getenv("CASHI_PAYMENT_CHANNEL","QRIS_CUSTOM").strip()
-CASHI_MIN_AMOUNT=env_int("CASHI_MIN_AMOUNT",2000)
-CASHI_MAX_AMOUNT=env_int("CASHI_MAX_AMOUNT",10000000)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Storage: Backblaze B2, up to 10 S3-compatible storage accounts.
-# Account 1 uses the short B2_* variables; accounts 2-10 may use B2_2_* ... B2_10_*.
-B2_COUNT=min(max(env_int("B2_COUNT",1),1),10)
+BOT_USERNAME = (
+    os.getenv("BOT_USERNAME", "mktplbot")
+    .lstrip("@")
+    .strip()
+)
 
-# Bot rules
-MAX_MEDIA=env_int("MAX_MEDIA",200)
-PLATFORM_FEE_PERCENT=80.0
-PAID_CODE_MIN_IDR=2000
-PAID_CODE_MAX_IDR=2000000
-VIP_CODE_DELAY_MINUTES=30
-MEDIA_SEND_DELAY_MS=250
+BOT_URL = f"https://t.me/{BOT_USERNAME}"
 
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+try:
+    STORAGE_CHANNEL_ID = int(
+        os.getenv(
+            "STORAGE_CHANNEL_ID",
+            "0",
+        ).strip()
+    )
+except (ValueError, TypeError):
+    STORAGE_CHANNEL_ID = 0
+
+
+# ============================================================
+# PAYMENT
+# ============================================================
+
+
+# ------------------------------------------------------------
+# BayarGG - LEGACY / OPTIONAL
+# ------------------------------------------------------------
+
+BAYARGG_API_KEY = os.getenv(
+    "BAYARGG_API_KEY",
+    "",
+).strip()
+
+BAYARGG_MERCHANT = os.getenv(
+    "BAYARGG_MERCHANT",
+    "",
+).strip()
+
+BAYARGG_WEBHOOK_SECRET = os.getenv(
+    "BAYARGG_WEBHOOK_SECRET",
+    "",
+).strip()
+
+
+BAYARGG_ENABLED = bool(BAYARGG_API_KEY)
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+BAYARGG_WEBHOOK_URL = (
+    f"{PUBLIC_BASE_URL}/bayargg/webhook" if PUBLIC_BASE_URL else ""
+)
+
+
+# ------------------------------------------------------------
+# CASHI.ID
+# ------------------------------------------------------------
+
+CASHI_API_KEY = os.getenv(
+    "CASHI_API_KEY",
+    "",
+).strip()
+
+CASHI_SECRET_KEY = os.getenv(
+    "CASHI_SECRET_KEY",
+    "",
+).strip()
+
+CASHI_BASE_URL = os.getenv(
+    "CASHI_BASE_URL",
+    "https://cashi.id",
+).strip().rstrip("/")
+
+
+# ------------------------------------------------------------
+# CASHI ENDPOINT
+# ------------------------------------------------------------
+
+CASHI_CREATE_ORDER_URL = (
+    f"{CASHI_BASE_URL}/api/create-order"
+)
+
+CASHI_CHECK_STATUS_URL = (
+    f"{CASHI_BASE_URL}/api/check-status"
+)
+
+
+# ------------------------------------------------------------
+# CASHI PAYMENT CHANNEL
+# ------------------------------------------------------------
+
+CASHI_PAYMENT_CHANNEL = os.getenv(
+    "CASHI_PAYMENT_CHANNEL",
+    "QRIS_CUSTOM",
+).strip()
+
+
+# ------------------------------------------------------------
+# CASHI LIMIT
+# ------------------------------------------------------------
+
+try:
+    CASHI_MIN_AMOUNT = int(
+        os.getenv(
+            "CASHI_MIN_AMOUNT",
+            "2000",
+        )
+    )
+except (ValueError, TypeError):
+    CASHI_MIN_AMOUNT = 2000
+
+
+try:
+    CASHI_MAX_AMOUNT = int(
+        os.getenv(
+            "CASHI_MAX_AMOUNT",
+            "10000000",
+        )
+    )
+except (ValueError, TypeError):
+    CASHI_MAX_AMOUNT = 10_000_000
+
+
+# ============================================================
+# PAYMENT MODE
+# ============================================================
+#
+# BOTH:
+#   CASHI + MANUAL aktif bersamaan.
+#
+# cashi:
+#   hanya CASHI.
+#
+# manual:
+#   hanya MANUAL.
+#
+# Default = both
+# ============================================================
+
+PAYMENT_MODE = os.getenv(
+    "PAYMENT_MODE",
+    "both",
+).strip().lower()
+
+
+if PAYMENT_MODE not in {
+    "both",
+    "cashi",
+    "manual",
+}:
+    PAYMENT_MODE = "both"
+
+
+# ============================================================
+# CASHI STATUS
+# ============================================================
+
+CASHI_ENABLED = bool(
+    CASHI_API_KEY
+)
+
+AUTO_PAYMENT_ENABLED = (
+    PAYMENT_MODE in {
+        "both",
+        "cashi",
+    }
+    and CASHI_ENABLED
+)
+
+
+# ============================================================
+# MANUAL PAYMENT
+# ============================================================
+
+MANUAL_QR_FILE_ID = os.getenv(
+    "MANUAL_QR_FILE_ID",
+    "",
+).strip()
+
+MANUAL_PAYMENT_NAME = os.getenv(
+    "MANUAL_PAYMENT_NAME",
+    "QRIS Manual",
+).strip()
+
+
+MANUAL_PAYMENT_ENABLED = (
+    PAYMENT_MODE in {
+        "both",
+        "manual",
+    }
+    and bool(MANUAL_QR_FILE_ID)
+)
+
+
+# ============================================================
+# CHANNEL
+# ============================================================
+
+def env_int(
+    name: str,
+    default: int = 0,
+) -> int:
+
+    raw = os.getenv(name)
+
+    if raw is None:
+        return default
+
+    raw = str(raw).strip()
+
+    if not raw:
+        return default
+
+    try:
+        return int(raw)
+
+    except (ValueError, TypeError):
+        return default
+
+
+CHANNEL_ID = env_int(
+    "CHANNEL_ID",
+    -1004441808999,
+)
+
+
+GROUP_ID = env_int(
+    "GROUP_ID",
+    CHANNEL_ID,
+)
+
+
+NOTIF_CHANNEL_ID = env_int(
+    "NOTIF_CHANNEL_ID",
+    -1004413314849,
+)
+
+
+# ============================================================
+# PUBLIC CHANNEL LINKS
+# ============================================================
+
+REVIEW_CHANNEL_URL = os.getenv(
+    "REVIEW_CHANNEL_URL",
+    "https://t.me/inforobotnew",
+).strip()
+
+
+NOTIFICATION_CHANNEL_URL = os.getenv(
+    "NOTIFICATION_CHANNEL_URL",
+    "https://t.me/+iG0rS6GFY3Y2NTNk",
+).strip()
+
+
+TRANSACTION_CHANNEL_URL = os.getenv(
+    "TRANSACTION_CHANNEL_URL",
+    "https://t.me/+0ddS3Ha4c2pkNmJl",
+).strip()
+
+
+ALL_CODE_CHANNEL_URL = os.getenv(
+    "ALL_CODE_CHANNEL_URL",
+    "https://t.me/inforobotnew",
+).strip()
+
+
+# ============================================================
+# WITHDRAW
+# ============================================================
+
+WITHDRAW_CHANNEL_ID = env_int(
+    "WITHDRAW_CHANNEL_ID",
+    -1004413314849,
+)
+
+
+# ============================================================
+# ADMIN
+# ============================================================
+
+def parse_admin_ids(
+    value,
+) -> list[int]:
+
+    if value is None:
+        return []
+
+    result = []
+
+    for item in str(value).replace(
+        ";",
+        ",",
+    ).split(","):
+
+        item = item.strip()
+
+        if not item:
+            continue
+
+        try:
+
+            user_id = int(item)
+
+        except (ValueError, TypeError):
+
+            continue
+
+        if user_id not in result:
+
+            result.append(user_id)
+
+    return result
+
+
+ADMIN_IDS = parse_admin_ids(
+    os.getenv(
+        "ADMIN_IDS",
+        "6847035364",
+    )
+)
+
+
+# ============================================================
+# VVIP
+# ============================================================
+
+VVIP_USERS = {
+    99887766,
+    55667788,
+}
+
+
+# ============================================================
+# VALIDATION
+# ============================================================
+
+if not BOT_TOKEN:
+
+    raise ValueError(
+        "BOT_TOKEN belum di-set di Railway Variables"
+    )
+
+
+if not DATABASE_URL:
+
+    raise ValueError(
+        "DATABASE_URL belum di-set di Railway Variables"
+    )
+
+
+if not STORAGE_CHANNEL_ID:
+
+    raise ValueError(
+        "STORAGE_CHANNEL_ID belum di-set di Railway Variables"
+    )
+
+
+if not ADMIN_IDS:
+
+    raise ValueError(
+        "ADMIN_IDS belum di-set di Railway Variables"
+    )
+
+
+if not WITHDRAW_CHANNEL_ID:
+
+    raise ValueError(
+        "WITHDRAW_CHANNEL_ID belum di-set di Railway Variables"
+    )
+
+
+# ============================================================
+# CASHI VALIDATION
+# ============================================================
+#
+# CASHI tidak boleh membuat bot mati kalau API key kosong
+# karena MANUAL masih boleh berjalan.
+#
+# Jika PAYMENT_MODE = cashi, Cashi WAJIB tersedia.
+# Jika PAYMENT_MODE = both, Cashi hanya ON jika API key ada.
+# ============================================================
+
+if PAYMENT_MODE == "cashi":
+
+    if not CASHI_API_KEY:
+
+        raise ValueError(
+            "CASHI_API_KEY belum di-set di Railway Variables"
+        )
+
+    if not CASHI_BASE_URL:
+
+        raise ValueError(
+            "CASHI_BASE_URL belum di-set"
+        )
+
+
+# ============================================================
+# MANUAL VALIDATION
+# ============================================================
+#
+# Jika PAYMENT_MODE = manual, QR Manual WAJIB ada.
+#
+# Jika PAYMENT_MODE = both, QR Manual hanya OFF jika
+# MANUAL_QR_FILE_ID belum di-set.
+# Bot tetap bisa hidup karena Cashi masih dapat digunakan.
+# ============================================================
+
+if PAYMENT_MODE == "manual":
+
+    if not MANUAL_QR_FILE_ID:
+
+        raise ValueError(
+            "MANUAL_QR_FILE_ID belum di-set di Railway Variables"
+        )
+
+
+if PAYMENT_MODE == "both":
+
+    if not CASHI_API_KEY and not MANUAL_QR_FILE_ID:
+
+        raise ValueError(
+            "Minimal CASHI_API_KEY atau MANUAL_QR_FILE_ID "
+            "harus tersedia"
+        )
+
+
+# ============================================================
+# STARTUP INFO
+# ============================================================
+
+print(
+    "=================================================="
+)
+
+print(
+    "Mektpl configuration loaded"
+)
+
+print(
+    f"BOT_USERNAME      : @{BOT_USERNAME}"
+)
+
+print(
+    f"PAYMENT_MODE      : {PAYMENT_MODE}"
+)
+
+print(
+    "MANUAL_PAYMENT    : "
+    f"{'ON' if MANUAL_PAYMENT_ENABLED else 'OFF'}"
+)
+
+print(
+    "CASHI_ENABLED     : "
+    f"{'ON' if CASHI_ENABLED else 'OFF'}"
+)
+
+print(
+    "AUTO_PAYMENT      : "
+    f"{'ON' if AUTO_PAYMENT_ENABLED else 'OFF'}"
+)
+
+print(
+    f"CASHI_CHANNEL     : {CASHI_PAYMENT_CHANNEL}"
+)
+
+print(
+    f"CASHI_MIN         : "
+    f"Rp {CASHI_MIN_AMOUNT:,}".replace(",", ".")
+)
+
+print(
+    f"CASHI_MAX         : "
+    f"Rp {CASHI_MAX_AMOUNT:,}".replace(",", ".")
+)
+
+print(
+    f"MANUAL_NAME       : {MANUAL_PAYMENT_NAME}"
+)
+
+print(
+    f"ADMIN_COUNT       : {len(ADMIN_IDS)}"
+)
+
+print(
+    f"STORAGE_CHANNEL   : {STORAGE_CHANNEL_ID}"
+)
+
+print(
+    f"NOTIF_CHANNEL     : {NOTIF_CHANNEL_ID}"
+)
+
+print(
+    "=================================================="
+)

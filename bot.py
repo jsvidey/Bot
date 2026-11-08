@@ -1,406 +1,225 @@
 from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.client.telegram import TelegramAPIServer
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.exceptions import TelegramBadRequest
-from config import BOT_TOKEN, TELEGRAM_API_BASE
-from middlewares.subscription import SubscriptionMiddleware
-from utils.i18n import get_lang, translate
-import asyncio
+import logging
+from aiogram.client.default import DefaultBotProperties
+from config import BOT_TOKEN
+from middlewares.ban import BanMiddleware
+from middlewares.maintenance import MaintenanceMiddleware
+from middlewares.ratelimit import RateLimitMiddleware
+from middlewares.loading import CallbackLoadingMiddleware
+from middlewares.message_loading import MessageLoadingMiddleware
+from utils.telegram_safe import install_telegram_edit_guards
+# Install before routers are imported so every direct aiogram edit call is protected.
+install_telegram_edit_guards()
 
-_LANG_CACHE = {}
-_CALLBACK_CHAT = {}
-
-async def _out_lang(chat_id):
-    try:
-        cid = int(chat_id)
-        if cid in _LANG_CACHE:
-            return _LANG_CACHE[cid]
-        lang = await get_lang(cid)
-        if lang:
-            _LANG_CACHE[cid] = lang
-        return lang or "id"
-    except Exception:
-        return "id"
-
-def _localize_markup(markup, lang):
-    if not markup or not getattr(markup, "inline_keyboard", None):
-        return markup
-    try:
-        rows=[]
-        for row in markup.inline_keyboard:
-            rows.append([btn.model_copy(update={"text": translate(btn.text,lang)}) for btn in row])
-        return markup.model_copy(update={"inline_keyboard": rows})
-    except Exception:
-        return markup
-
-
-def _localize_media_list(media, lang):
-    if not media:
-        return media
-    try:
-        out=[]
-        for item in media:
-            if getattr(item, "caption", None):
-                item=item.model_copy(update={"caption": translate(item.caption, lang)})
-            out.append(item)
-        return out
-    except Exception:
-        return media
-
-class TrackedBot(Bot):
-    async def send_message(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "text" in kwargs:
-            kwargs["text"] = translate(kwargs["text"], lang)
-        elif len(args) >= 2:
-            args = list(args)
-            args[1] = translate(args[1], lang)
-            args = tuple(args)
-        if "reply_markup" in kwargs:
-            kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        msg = await super().send_message(*args, **kwargs)
-        _track_message(msg)
-        return msg
-
-    async def send_photo(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "caption" in kwargs:
-            kwargs["caption"] = translate(kwargs["caption"], lang)
-        if "reply_markup" in kwargs:
-            kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        return await super().send_photo(*args, **kwargs)
-
-    async def send_video(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "caption" in kwargs:
-            kwargs["caption"] = translate(kwargs["caption"], lang)
-        if "reply_markup" in kwargs:
-            kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        return await super().send_video(*args, **kwargs)
-
-    async def send_audio(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "caption" in kwargs:
-            kwargs["caption"] = translate(kwargs["caption"], lang)
-        if "reply_markup" in kwargs:
-            kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        return await super().send_audio(*args, **kwargs)
-
-    async def send_document(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "caption" in kwargs:
-            kwargs["caption"] = translate(kwargs["caption"], lang)
-        if "reply_markup" in kwargs:
-            kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        return await super().send_document(*args, **kwargs)
-
-    async def send_voice(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "caption" in kwargs: kwargs["caption"] = translate(kwargs["caption"], lang)
-        if "reply_markup" in kwargs: kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        return await super().send_voice(*args, **kwargs)
-
-    async def send_animation(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "caption" in kwargs: kwargs["caption"] = translate(kwargs["caption"], lang)
-        if "reply_markup" in kwargs: kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        return await super().send_animation(*args, **kwargs)
-
-    async def send_video_note(self, *args, **kwargs):
-        return await super().send_video_note(*args, **kwargs)
-
-    async def send_media_group(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "media" in kwargs: kwargs["media"] = _localize_media_list(kwargs["media"], lang)
-        elif len(args) >= 2:
-            args=list(args); args[1]=_localize_media_list(args[1],lang); args=tuple(args)
-        return await super().send_media_group(*args, **kwargs)
-
-    async def edit_message_media(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        media = kwargs.get("media")
-        if media is not None and getattr(media, "caption", None):
-            kwargs["media"] = media.model_copy(update={"caption": translate(media.caption, lang)})
-        if "reply_markup" in kwargs: kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        return await super().edit_message_media(*args, **kwargs)
-
-    async def edit_message_text(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "text" in kwargs:
-            kwargs["text"] = translate(kwargs["text"], lang)
-        elif len(args) >= 3:
-            args = list(args); args[2] = translate(args[2], lang); args = tuple(args)
-        if "reply_markup" in kwargs:
-            kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        return await super().edit_message_text(*args, **kwargs)
-
-    async def answer_callback_query(self, *args, **kwargs):
-        callback_id = kwargs.get("callback_query_id", args[0] if args else None)
-        chat_id = _CALLBACK_CHAT.get(callback_id)
-        if chat_id is not None and "text" in kwargs:
-            kwargs["text"] = translate(kwargs["text"], await _out_lang(chat_id))
-        elif chat_id is not None and len(args) >= 2 and args[1]:
-            args = list(args)
-            args[1] = translate(args[1], await _out_lang(chat_id))
-            args = tuple(args)
-        result = await super().answer_callback_query(*args, **kwargs)
-        if callback_id is not None:
-            _CALLBACK_CHAT.pop(callback_id, None)
-        return result
-
-    async def edit_message_caption(self, *args, **kwargs):
-        chat_id = kwargs.get("chat_id", args[0] if args else None)
-        lang = await _out_lang(chat_id)
-        if "caption" in kwargs:
-            kwargs["caption"] = translate(kwargs["caption"], lang)
-        if "reply_markup" in kwargs:
-            kwargs["reply_markup"] = _localize_markup(kwargs["reply_markup"], lang)
-        return await super().edit_message_caption(*args, **kwargs)
-
-_session = None
-if TELEGRAM_API_BASE:
-    _session = AiohttpSession(api=TelegramAPIServer.from_base(TELEGRAM_API_BASE))
-bot = TrackedBot(
-    BOT_TOKEN,
-    session=_session,
-    default=DefaultBotProperties(parse_mode="HTML"),
+# ============================================================
+# BOT INIT
+# ============================================================
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(
+        parse_mode="HTML"
+    )
 )
 dp = Dispatcher()
 
+# ============================================================
+# GLOBAL TELEGRAM ERROR HANDLING
+# ============================================================
+# Telegram returns this error when code tries to edit a message
+# with exactly the same text and inline keyboard. This is a benign
+# race condition (often caused by double-clicks / concurrent workers),
+# so do not let it bubble up as an unhandled update exception.
 @dp.errors()
-async def _handle_callback_query_errors(event, exception):
-    """Silently handle expired/invalid callback query IDs.
+async def telegram_error_handler(event):
+    exception = event.exception
 
-    Telegram callback queries have a short acknowledgement window. If a
-    handler performs slow DB/payment work before answering, Telegram can
-    return QUERY_ID_INVALID / query is too old. This is an expected transport
-    condition, not a bot logic failure, so it must not produce an ERROR
-    traceback in Railway logs.
-    """
-    if isinstance(exception, TelegramBadRequest):
-        msg = str(exception).lower()
-        if ("query is too old" in msg or
-                "response timeout expired" in msg or
-                "query id is invalid" in msg or
-                "query_id_invalid" in msg):
-            return True
-    # Persist uncaught errors (including Telegram flood-limit exceptions) for Admin > Bot Errors.
-    try:
-        from database import get_pool
-        event_obj = getattr(event, 'update', None) or event
-        user = getattr(event_obj, 'from_user', None)
-        source = type(event_obj).__name__
-        message = (f'{type(exception).__name__}: {exception}')[:1500]
-        await (await get_pool()).execute(
-            "INSERT INTO error_logs(level,source,message,user_id) VALUES($1,$2,$3,$4)",
-            'WARNING' if 'retryafter' in type(exception).__name__.lower() or 'flood' in str(exception).lower() else 'ERROR',
-            source, message, getattr(user, 'id', None))
-    except Exception:
-        pass
+    if isinstance(exception, TelegramBadRequest) and "message is not modified" in str(exception).lower():
+        logging.debug("Telegram ignored duplicate message edit: %s", exception)
+        return True
+
+    # Let other errors keep their normal aiogram behaviour/logging.
     return False
-dp.message.middleware(SubscriptionMiddleware())
+# ============================================================
+# MIDDLEWARE
+# ============================================================
+# IMPORTANT: loading is registered FIRST so Telegram receives the
+# callback ACK before maintenance/ban/rate-limit/database work.
+dp.callback_query.middleware(
+    CallbackLoadingMiddleware()
+)
+dp.message.middleware(
+    MessageLoadingMiddleware()
+)
 
-class _CallbackLanguageMiddleware:
-    async def __call__(self, handler, event, data):
-        try:
-            if getattr(event, "id", None) and getattr(event, "message", None):
-                _CALLBACK_CHAT[event.id] = event.message.chat.id
-                # Keep the map bounded.
-                if len(_CALLBACK_CHAT) > 1000:
-                    for k in list(_CALLBACK_CHAT)[:500]:
-                        _CALLBACK_CHAT.pop(k, None)
-        except Exception:
-            pass
-        return await handler(event, data)
-
-dp.callback_query.middleware(_CallbackLanguageMiddleware())
-dp.callback_query.middleware(SubscriptionMiddleware())
-
-
-def _loading_markup(markup: InlineKeyboardMarkup, target: CallbackQuery):
-    """Return a copy of the markup with the pressed callback button showing Loading."""
-    if not markup or not target.message:
-        return markup, False
-    rows = []
-    changed = False
-    target_data = target.data
-    for row in markup.inline_keyboard:
-        new_row = []
-        for btn in row:
-            if btn.callback_data == target_data and not changed:
-                new_row.append(btn.model_copy(update={"text": "⏳ Loading…"}))
-                changed = True
-            else:
-                new_row.append(btn)
-        rows.append(new_row)
-    return InlineKeyboardMarkup(inline_keyboard=rows), changed
-
-
-# Per-chat message tracker. It records messages sent by this bot so callback
-# actions can remove stale prompts/menus before showing the next screen.
-# Only a bounded recent set is kept to avoid unbounded memory growth.
-_TRACKED_MESSAGES = {}
-_TRACKED_LIMIT = 80
-
-def _track_message(msg):
-    try:
-        chat_id = msg.chat.id
-        mid = msg.message_id
-        bucket = _TRACKED_MESSAGES.setdefault(chat_id, [])
-        if mid not in bucket:
-            bucket.append(mid)
-        if len(bucket) > _TRACKED_LIMIT:
-            del bucket[:-_TRACKED_LIMIT]
-    except Exception:
-        pass
-    return msg
-
-async def _delete_stale_messages(bot, chat_id, keep_id=None):
-    ids = list(_TRACKED_MESSAGES.get(chat_id, []))
-    if not ids:
-        return
-    kept = []
-    for mid in ids:
-        if keep_id is not None and mid == keep_id:
-            kept.append(mid)
-            continue
-        try:
-            await bot.delete_message(chat_id, mid)
-        except Exception:
-            # Message may already be deleted / too old / not deletable.
-            pass
-    _TRACKED_MESSAGES[chat_id] = kept
-
-class MessageTrackerMiddleware:
-    """Clear stale bot text prompts when a user replies with a new message.
-
-    This only deletes recent messages sent by the bot; Telegram bots cannot
-    reliably delete a user's own private-chat messages.
-    """
-    async def __call__(self, handler, event, data):
-        if isinstance(event, Message) and getattr(event.chat, "type", None) == "private":
-            try:
-                await _delete_stale_messages(event.bot, event.chat.id)
-            except Exception:
-                pass
-        return await handler(event, data)
-
-dp.message.middleware(MessageTrackerMiddleware())
-
-
-class ButtonLoadingMiddleware:
-    """Show loading directly inside the clicked inline button.
-
-    No extra message and no floating callback alert are generated. The
-    handler remains responsible for replacing/editing the message when its
-    work finishes. If the handler leaves the message untouched, the original
-    keyboard is restored automatically.
-    """
-    async def __call__(self, handler, event, data):
-        if not isinstance(event, CallbackQuery) or not event.message:
-            return await handler(event, data)
-
-        if event.id:
-            _CALLBACK_CHAT[event.id] = event.message.chat.id
-        original_markup = event.message.reply_markup
-        loading_markup, changed = _loading_markup(original_markup, event)
-        if not changed:
-            return await handler(event, data)
-
-        try:
-            await event.message.edit_reply_markup(reply_markup=loading_markup)
-        except Exception:
-            pass
-
-        # Remove stale bot messages from previous screens while preserving
-        # the message whose button was clicked; handlers may edit it.
-        try:
-            await _delete_stale_messages(event.bot, event.message.chat.id, keep_id=event.message.message_id)
-        except Exception:
-            pass
-
-        result = await handler(event, data)
-        return result
-
-
-dp.callback_query.middleware(ButtonLoadingMiddleware())
-
-class TypingIndicatorMiddleware:
-    """Show Telegram's typing indicator while private-chat handlers are processing."""
-    async def __call__(self, handler, event, data):
-        try:
-            chat_id = None
-            if isinstance(event, Message):
-                if event.chat.type == "private":
-                    chat_id = event.chat.id
-            elif isinstance(event, CallbackQuery) and event.message:
-                if getattr(event.message.chat, "type", None) == "private":
-                    chat_id = event.message.chat.id
-            if chat_id is not None:
-                await event.bot.send_chat_action(chat_id=chat_id, action="typing")
-        except Exception:
-            # Typing indicator is cosmetic; never block the actual request.
-            pass
-        return await handler(event, data)
-
-
-class MaintenanceMiddleware:
-    async def __call__(self, handler, event, data):
-        try:
-            from database import get_pool
-            from utils.admin_access import admin_access
-            uid=getattr(getattr(event,'from_user',None),'id',0)
-            p=await get_pool()
-            is_admin = bool(uid and await admin_access(uid))
-            if uid and not is_admin:
-                banned=await p.fetchval('SELECT COALESCE(banned,FALSE) FROM users WHERE user_id=$1',int(uid))
-                if banned:
-                    if isinstance(event, CallbackQuery):
-                        await event.answer('🚫 Akun kamu diblokir oleh admin.',show_alert=True)
-                    elif isinstance(event, Message):
-                        await event.answer('🚫 Akun kamu diblokir oleh admin. Hubungi admin jika ini keliru.')
-                    return
-            if is_admin:
-                return await handler(event,data)
-            maintenance=str(await p.fetchval("SELECT value FROM settings WHERE key='maintenance'") or 'off').lower()
-            if maintenance=='on':
-                if isinstance(event, CallbackQuery):
-                    await event.answer('🛠 Bot sedang maintenance.',show_alert=True)
-                elif isinstance(event, Message):
-                    await event.answer('🛠 Bot sedang maintenance. Silakan coba lagi nanti.')
-                return
-        except Exception:
-            # Fail open on transient DB failure so the bot remains recoverable;
-            # the admin health screen will expose persistent DB problems.
-            pass
-        return await handler(event,data)
-
-dp.message.middleware(TypingIndicatorMiddleware())
-dp.callback_query.middleware(TypingIndicatorMiddleware())
-dp.message.middleware(MaintenanceMiddleware())
-dp.callback_query.middleware(MaintenanceMiddleware())
-
-
-from handlers.start import router as start
-from handlers.upfile import router as up
-from handlers.getfile import router as getf
-from handlers.payments import router as pay
-from handlers.vip import router as vip
-from handlers.misc import router as misc
-from handlers.admin import router as admin
-from handlers.support import router as support
-
-for r in [start, support, up, getf, pay, vip, admin, misc]:
-    dp.include_router(r)
+dp.message.middleware(
+    BanMiddleware()
+)
+dp.callback_query.middleware(
+    BanMiddleware()
+)
+dp.message.middleware(
+    MaintenanceMiddleware()
+)
+dp.callback_query.middleware(
+    MaintenanceMiddleware()
+)
+# Conservative anti-spam guard
+dp.callback_query.middleware(
+    RateLimitMiddleware()
+)
+# ============================================================
+# ROUTERS IMPORT
+# ============================================================
+# BASIC
+from handlers.start import router as start_router
+from handlers.check_sub import router as check_sub_router
+from handlers.page import router as page_router
+from handlers.open_menu import router as open_menu_router
+from handlers.sendall import router as sendall_router
+from handlers.menu import router as menu_router
+# FILE SYSTEM
+from handlers.upfile import router as upfile_router
+from handlers.getfile import router as getfile_router
+from handlers.review_code import router as review_code_router
+from handlers.getreview import router as getreview_router
+# STORE
+from handlers.top import router as top_router
+from handlers.code import router as code_router
+# SEARCH
+from handlers.channel import router as channel_router
+from handlers.search_code import router as search_router
+from handlers.price_code import router as price_router
+from handlers.new_code import router as new_code_router
+from handlers.category_code import router as category_router
+# ACCOUNT
+from handlers.account import router as account_router
+from handlers.points import router as points_router
+from handlers.vip import router as vip_router
+from handlers.my_code import router as my_code_router
+from handlers.help import router as help_router
+from handlers.myfile import router as myfile_router
+from handlers.delete_file import router as delete_file_router
+from handlers.edit_price import router as edit_price_router
+from handlers.ewallet import router as ewallet_router
+# PAYMENT
+from handlers.pay import router as pay_router
+from handlers.cancel import router as cancel_router
+from handlers.qrid import router as qrid_router
+# CASHI PAYMENT
+from handlers.cashi import router as cashi_router
+from handlers.bayargg_payment import router as bayargg_payment_router
+# WITHDRAW
+from handlers.withdraw import (
+    withdraw_router,
+    withdraw_confirm_router,
+)
+# CREATOR
+from handlers.creator import router as creator_router
+# ADMIN
+from handlers.admin import router as admin_router
+# MARKET FEATURES
+from handlers.favorite import router as favorite_router
+from handlers.rating import router as rating_router
+from handlers.review import router as review_router
+from handlers.free_code import router as free_code_router
+from handlers.market_all import router as market_all_router
+from handlers.market_purchase import router as market_purchase_router
+# MARKETPLACE
+from handlers.marketplace import router as marketplace_router
+from handlers.market_detail import router as market_detail_router
+from handlers.market_rating import router as market_rating_router
+from handlers.market_favorite import router as market_favorite_router
+from handlers.market_reaction import router as market_reaction_router
+# NOTIFICATION
+from handlers.notify import router as notify_router
+# ============================================================
+# REGISTER ROUTERS
+# ============================================================
+# ------------------------------------------------------------
+# BASIC
+# ------------------------------------------------------------
+dp.include_router(start_router)
+dp.include_router(check_sub_router)
+dp.include_router(menu_router)
+# ------------------------------------------------------------
+# FILE SYSTEM
+# ------------------------------------------------------------
+dp.include_router(upfile_router)
+# Review codes must be handled before the global Get File text handler.
+dp.include_router(review_code_router)
+dp.include_router(getfile_router)
+dp.include_router(getreview_router)
+dp.include_router(page_router)
+dp.include_router(open_menu_router)
+dp.include_router(sendall_router)
+# ------------------------------------------------------------
+# STORE
+# ------------------------------------------------------------
+dp.include_router(top_router)
+dp.include_router(code_router)
+# ------------------------------------------------------------
+# SEARCH
+# ------------------------------------------------------------
+dp.include_router(channel_router)
+dp.include_router(search_router)
+dp.include_router(price_router)
+dp.include_router(category_router)
+dp.include_router(new_code_router)
+# ------------------------------------------------------------
+# ACCOUNT
+# ------------------------------------------------------------
+dp.include_router(account_router)
+dp.include_router(points_router)
+# Account -> 💎 VIP -> callback_data="vvip"
+dp.include_router(vip_router)
+dp.include_router(my_code_router)
+dp.include_router(help_router)
+dp.include_router(myfile_router)
+dp.include_router(delete_file_router)
+dp.include_router(edit_price_router)
+dp.include_router(ewallet_router)
+# ------------------------------------------------------------
+# PAYMENT
+# ------------------------------------------------------------
+dp.include_router(pay_router)
+# CASHI
+# Semua callback payment Cashi ditangani oleh handlers.cashi
+dp.include_router(cashi_router)
+dp.include_router(bayargg_payment_router)
+dp.include_router(cancel_router)
+dp.include_router(qrid_router)
+# ------------------------------------------------------------
+# WITHDRAW
+# ------------------------------------------------------------
+dp.include_router(withdraw_router)
+dp.include_router(withdraw_confirm_router)
+# ------------------------------------------------------------
+# ADMIN
+# ------------------------------------------------------------
+dp.include_router(admin_router)
+# ------------------------------------------------------------
+# CREATOR
+# ------------------------------------------------------------
+dp.include_router(creator_router)
+# ------------------------------------------------------------
+# MARKET FEATURES
+# ------------------------------------------------------------
+dp.include_router(favorite_router)
+dp.include_router(rating_router)
+dp.include_router(review_router)
+dp.include_router(free_code_router)
+dp.include_router(market_all_router)
+dp.include_router(market_purchase_router)
+# ------------------------------------------------------------
+# MARKETPLACE
+# ------------------------------------------------------------
+dp.include_router(marketplace_router)
+dp.include_router(market_detail_router)
+dp.include_router(market_rating_router)
+dp.include_router(market_favorite_router)
+dp.include_router(market_reaction_router)
+# ------------------------------------------------------------
+# NOTIFICATION
+# ------------------------------------------------------------
+dp.include_router(notify_router)
