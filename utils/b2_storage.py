@@ -1,400 +1,351 @@
-from __future__ import annotations
+"""Backblaze B2 storage helpers for Pastele.
 
+B2 is an optional secondary copy. Telegram file_id remains the canonical
+fallback, so a B2 outage must never make an upload fail.
+"""
 import asyncio
 import logging
+import mimetypes
 import os
-import shutil
-import tempfile
-import uuid
-from dataclasses import dataclass
+import re
+import base64
+import hashlib
 from pathlib import Path
+from typing import Any, Optional
 
 import boto3
-from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotoConfig
-from botocore.exceptions import BotoCoreError, ClientError
+from cryptography.fernet import Fernet, InvalidToken
 
-from config import B2_COUNT
+from config import BOT_TOKEN, DATABASE_URL, B2_CREDENTIAL_KEY
+from database import get_pool
 
 logger = logging.getLogger(__name__)
 
-UPLOAD_RETRIES = 3
-REQUEST_TIMEOUT = 120
+
+_SECRET_PREFIX = "enc:v1:"
 
 
-@dataclass
-class B2Account:
-    account_id: int
-    endpoint: str
-    region: str
-    bucket: str
-    key_id: str
-    application_key: str
-    client: object
-    name: str = ""
+def _credential_fernet() -> Fernet:
+    """Return the stable Fernet key used for B2 application-key secrets.
 
-
-class B2Pool:
-    """Backblaze B2 S3-compatible storage pool.
-
-    Account 1:
-      B2_ENDPOINT
-      B2_REGION
-      B2_BUCKET
-      B2_KEY_ID
-      B2_APPLICATION_KEY
-
-    Accounts 2-10:
-      B2_2_ENDPOINT ... B2_2_APPLICATION_KEY
-      ...
+    Production should set B2_CREDENTIAL_KEY and keep it unchanged.
+    The legacy BOT_TOKEN|DATABASE_URL derivation remains only for backward
+    compatibility with existing installations.
     """
+    raw = (B2_CREDENTIAL_KEY or f"{BOT_TOKEN}|{DATABASE_URL}").encode("utf-8")
+    key = base64.urlsafe_b64encode(hashlib.sha256(raw).digest())
+    return Fernet(key)
 
-    def __init__(self):
-        self.accounts: list[B2Account] = []
-        self._cursor = 0
-        self._lock = asyncio.Lock()
-        self._load()
 
-    @staticmethod
-    def _env(account_id: int, field: str, default: str = "") -> str:
-        prefix = "B2" if account_id == 1 else f"B2_{account_id}"
-        return os.getenv(f"{prefix}_{field}", default).strip()
+def encrypt_b2_secret(value: str) -> str:
+    value = str(value or "")
+    if value.startswith(_SECRET_PREFIX):
+        return value
+    token = _credential_fernet().encrypt(value.encode("utf-8")).decode("ascii")
+    return _SECRET_PREFIX + token
 
-    @staticmethod
-    def _make_account(account_id: int, endpoint: str, region: str, bucket: str,
-                      key_id: str, app_key: str, name: str = "") -> B2Account:
-        endpoint = (endpoint or "").strip().rstrip("/")
-        region = (region or "").strip()
-        bucket = (bucket or "").strip()
-        key_id = (key_id or "").strip()
-        app_key = (app_key or "").strip()
-        if not endpoint:
-            endpoint = f"https://s3.{region}.backblazeb2.com"
-        if not endpoint.startswith(("http://", "https://")):
-            endpoint = "https://" + endpoint
-        client = boto3.client(
-            "s3",
-            endpoint_url=endpoint,
-            region_name=region,
-            aws_access_key_id=key_id,
-            aws_secret_access_key=app_key,
-            config=BotoConfig(
-                signature_version="s3v4",
-                connect_timeout=20,
-                read_timeout=REQUEST_TIMEOUT,
-                max_pool_connections=4,
-                tcp_keepalive=True,
-                retries={"max_attempts": 4, "mode": "standard"},
-                s3={
-                    "addressing_style": "path",
-                    "payload_signing_enabled": True,
-                },
-            ),
-        )
-        return B2Account(
-            account_id=int(account_id),
-            endpoint=endpoint,
-            region=region,
-            bucket=bucket,
-            key_id=key_id,
-            application_key=app_key,
-            client=client,
-            name=(name or "").strip(),
+
+def decrypt_b2_secret(value: str) -> str:
+    value = str(value or "")
+    if not value.startswith(_SECRET_PREFIX):
+        # Backward compatibility for a legacy plaintext row. New writes are
+        # always encrypted; init_db migrates legacy rows when possible.
+        return value
+    token = value[len(_SECRET_PREFIX):]
+    try:
+        return _credential_fernet().decrypt(token.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError, TypeError):
+        raise RuntimeError("B2 application key tidak dapat didekripsi")
+
+
+def log_b2_credential_key_status() -> None:
+    if not B2_CREDENTIAL_KEY:
+        logger.warning(
+            "B2_CREDENTIAL_KEY is not set; using the legacy derived key. "
+            "Set a stable B2_CREDENTIAL_KEY for production."
         )
 
-    def _load(self):
-        self.accounts.clear()
-        for account_id in range(1, B2_COUNT + 1):
-            endpoint = self._env(account_id, "ENDPOINT").rstrip("/")
-            region = self._env(account_id, "REGION")
-            bucket = self._env(account_id, "BUCKET")
-            key_id = self._env(account_id, "KEY_ID")
-            app_key = self._env(account_id, "APPLICATION_KEY")
 
-            if not all((endpoint, region, bucket, key_id, app_key)):
-                if account_id == 1:
-                    logger.warning(
-                        "Backblaze B2 is not configured. "
-                        "Set B2_ENDPOINT, B2_REGION, B2_BUCKET, "
-                        "B2_KEY_ID and B2_APPLICATION_KEY."
-                    )
-                continue
+async def migrate_b2_credentials() -> int:
+    """Encrypt any legacy plaintext B2 application keys in-place."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT account_id, application_key FROM b2_storage_accounts"
+    )
+    changed = 0
+    for row in rows:
+        value = str(row["application_key"] or "")
+        if value.startswith(_SECRET_PREFIX):
+            continue
+        await pool.execute(
+            "UPDATE b2_storage_accounts SET application_key=$1, updated_at=NOW() "
+            "WHERE account_id=$2",
+            encrypt_b2_secret(value), int(row["account_id"])
+        )
+        changed += 1
+    if changed:
+        logger.info("🔐 Encrypted %s legacy B2 credential(s)", changed)
+    return changed
 
-            if not endpoint.startswith(("http://", "https://")):
-                endpoint = "https://" + endpoint
 
-            try:
-                self.accounts.append(
-                    self._make_account(
-                        account_id, endpoint, region, bucket, key_id, app_key
-                    )
-                )
-                logger.info(
-                    "Backblaze B2 %s loaded: bucket=%s endpoint=%s",
-                    account_id, bucket, endpoint,
-                )
-            except Exception:
-                logger.exception("Backblaze B2 %s init failed", account_id)
+def _safe_name(value: str) -> str:
+    value = str(value or "file").strip()
+    value = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+    return value[:180] or "file"
 
-    async def reload_from_db(self):
-        """Reload storage accounts configured from the admin panel.
-        Environment variables remain as a fallback for accounts that have no
-        database row. A database row (including disabled=False) takes priority.
+
+async def get_b2_accounts() -> list[dict[str, Any]]:
+    pool = await get_pool()
+    rows = await pool.fetch(
         """
-        try:
-            from database import fetch
-            rows = await fetch(
-                """SELECT account_id,name,endpoint,region,bucket,key_id,application_key,enabled
-                   FROM b2_storage_accounts ORDER BY account_id"""
+        SELECT account_id, name, region, endpoint, bucket,
+               key_id, application_key, is_enabled, is_target,
+               created_at, updated_at
+        FROM b2_storage_accounts
+        WHERE is_enabled=TRUE
+        ORDER BY is_target DESC, account_id ASC
+        """
+    )
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["application_key"] = decrypt_b2_secret(item["application_key"])
+        result.append(item)
+    return result
+
+
+async def get_b2_account(account_id: int) -> Optional[dict[str, Any]]:
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT account_id, name, region, endpoint, bucket,
+               key_id, application_key, is_enabled, is_target
+        FROM b2_storage_accounts
+        WHERE account_id=$1 AND is_enabled=TRUE
+        """,
+        int(account_id),
+    )
+    if not row:
+        return None
+    item = dict(row)
+    item["application_key"] = decrypt_b2_secret(item["application_key"])
+    return item
+
+
+async def get_upload_account() -> Optional[dict[str, Any]]:
+    accounts = await get_b2_accounts()
+    return accounts[0] if accounts else None
+
+
+def _normalize_b2_region(region: str, endpoint: str = "") -> str:
+    """Normalize a Backblaze region/hostname into a boto3 region."""
+    value = str(region or "").strip().strip("/")
+    host = str(endpoint or "").strip().rstrip("/")
+    if "://" in host:
+        host = host.split("://", 1)[1].split("/", 1)[0]
+    else:
+        host = host.split("/", 1)[0]
+
+    for candidate in (value, host):
+        c = candidate.strip()
+        if "://" in c:
+            c = c.split("://", 1)[1].split("/", 1)[0]
+        m = re.search(r"(?:^|\.)s3\.(us-[a-z]+-\d+)\.backblazeb2\.com$", c, re.I)
+        if m:
+            return m.group(1).lower()
+        m = re.search(r"(us-[a-z]+-\d+)", c, re.I)
+        if m:
+            return m.group(1).lower()
+    return ""
+
+
+def _normalize_b2_endpoint(endpoint: str, region: str) -> str:
+    """Normalize malformed Backblaze S3 endpoints to the canonical endpoint."""
+    ep = str(endpoint or "").strip().rstrip("/")
+    if not region:
+        return (ep if ep.startswith(("http://", "https://")) else ("https://" + ep if ep else ""))
+
+    host = ep
+    if "://" in host:
+        host = host.split("://", 1)[1].split("/", 1)[0]
+    else:
+        host = host.split("/", 1)[0]
+
+    # Backblaze's canonical S3 endpoint. Fix values such as
+    # s3.s3.us-east-005.backblazeb2.com.backblazeb2.com.
+    if "backblazeb2.com" in host.lower() or not ep:
+        return f"https://s3.{region}.backblazeb2.com"
+
+    return ep if ep.startswith(("http://", "https://")) else "https://" + ep
+
+
+def _client(account: dict[str, Any]):
+    """Create a Backblaze B2 S3 client with a valid Boto3 region."""
+    raw_region = str(account.get("region") or "").strip()
+    endpoint = str(account.get("endpoint") or "").strip().rstrip("/")
+    region = _normalize_b2_region(raw_region, endpoint)
+    endpoint = _normalize_b2_endpoint(endpoint, region)
+
+    kwargs = {
+        "service_name": "s3",
+        "aws_access_key_id": str(account["key_id"]).strip(),
+        "aws_secret_access_key": str(account["application_key"]).strip(),
+        "region_name": region or None,
+        "config": BotoConfig(
+            signature_version="s3v4",
+            connect_timeout=30,
+            read_timeout=120,
+            retries={"max_attempts": 3, "mode": "standard"},
+        ),
+    }
+    if endpoint:
+        kwargs["endpoint_url"] = endpoint
+    return boto3.client(**kwargs)
+
+
+def _upload_sync(account: dict[str, Any], local_path: str, object_key: str,
+                 content_type: Optional[str], file_size: int) -> dict[str, Any]:
+    client = _client(account)
+    extra = {}
+    if content_type:
+        extra["ContentType"] = content_type
+    with open(local_path, "rb") as fh:
+        if extra:
+            client.upload_fileobj(
+                fh, account["bucket"], object_key, ExtraArgs=extra
             )
-        except Exception as exc:
-            logger.warning("Could not load B2 accounts from database: %s", exc)
-            return
-
-        current = {a.account_id: a for a in self.accounts}
-        for row in rows:
-            aid = int(row["account_id"])
-            current.pop(aid, None)
-            if not row["enabled"]:
-                continue
-            try:
-                current[aid] = self._make_account(
-                    aid, row["endpoint"], row["region"], row["bucket"],
-                    row["key_id"], row["application_key"], row["name"]
-                )
-                logger.info("Backblaze B2 %s loaded from admin panel: bucket=%s",
-                            aid, row["bucket"])
-            except Exception:
-                logger.exception("Backblaze B2 %s database config failed", aid)
-
-        self.accounts = [current[k] for k in sorted(current)]
-        if self._cursor >= len(self.accounts):
-            self._cursor = 0
-
-    @property
-    def available(self) -> bool:
-        return bool(self.accounts)
-
-    def _account(self, account_id: int) -> B2Account:
-        for account in self.accounts:
-            if account.account_id == int(account_id):
-                return account
-        raise RuntimeError(f"Backblaze B2 account {account_id} is unavailable")
-
-    @staticmethod
-    def _object_key(filename: str) -> str:
-        safe = Path(filename or "file.bin").name
-        # Keep the original extension/name readable, while preventing path traversal.
-        token = uuid.uuid4().hex
-        return f"showjsbot/{token}_{safe}"
-
-    async def upload(self, path: str, filename: str, mime: str):
-        if not os.path.isfile(path):
-            raise FileNotFoundError(path)
-
-        expected = os.path.getsize(path)
-        if expected <= 0:
-            raise RuntimeError("Cannot upload an empty file")
-
-        fd, snapshot = tempfile.mkstemp(prefix="b2_snapshot_", suffix=".bin")
-        os.close(fd)
-
-        try:
-            await asyncio.to_thread(shutil.copyfile, path, snapshot)
-            size = os.path.getsize(snapshot)
-            if size != expected:
-                raise RuntimeError(
-                    f"Snapshot size mismatch: source={expected}, snapshot={size}"
-                )
-
-            async with self._lock:
-                if not self.accounts:
-                    raise RuntimeError(
-                        "No Backblaze B2 configured. Set B2_ENDPOINT, "
-                        "B2_REGION, B2_BUCKET, B2_KEY_ID and "
-                        "B2_APPLICATION_KEY."
-                    )
-                preferred = 0
-                try:
-                    from database import fetchval
-                    preferred = int(await fetchval("SELECT value FROM settings WHERE key='preferred_b2_account'") or 0)
-                except Exception:
-                    preferred = 0
-                pool = self.accounts
-                if preferred and any(a.account_id == preferred for a in pool):
-                    start = next(i for i,a in enumerate(pool) if a.account_id == preferred)
-                    ordered = [pool[(start+n)%len(pool)] for n in range(len(pool))]
-                else:
-                    ordered = [pool[(self._cursor+n)%len(pool)] for n in range(len(pool))]
-                    self._cursor = (self._cursor+1)%len(pool)
-
-            last = None
-            for account in ordered:
-                object_key = self._object_key(filename)
-                for attempt in range(1, UPLOAD_RETRIES + 1):
-                    try:
-                        extra = {}
-                        if mime:
-                            extra["ContentType"] = mime
-
-                        # Files handled by this bot are limited to 20 MiB, so use
-                        # one signed PutObject request instead of transfer-manager uploads.
-                        def put_object():
-                            with open(snapshot, "rb") as body:
-                                kwargs = {
-                                    "Bucket": account.bucket,
-                                    "Key": object_key,
-                                    "Body": body,
-                                    "ContentLength": size,
-                                }
-                                if mime:
-                                    kwargs["ContentType"] = mime
-                                return account.client.put_object(**kwargs)
-
-                        await asyncio.to_thread(put_object)
-
-                        head = await asyncio.to_thread(
-                            account.client.head_object,
-                            Bucket=account.bucket,
-                            Key=object_key,
-                        )
-                        remote_size = int(head.get("ContentLength") or 0)
-                        if remote_size != size:
-                            raise RuntimeError(
-                                "Backblaze B2 upload size verification failed: "
-                                f"local={size}, remote={remote_size}"
-                            )
-
-                        logger.info(
-                            "Backblaze B2 %s upload success: key=%s size=%s",
-                            account.account_id, object_key, remote_size,
-                        )
-                        return account.account_id, object_key, {
-                            "id": object_key,
-                            "name": filename,
-                            "mimeType": mime or "application/octet-stream",
-                            "size": remote_size,
-                            "bucket": account.bucket,
-                        }
-
-                    except Exception as exc:
-                        last = exc
-                        logger.warning(
-                            "B2 %s upload attempt %s/%s failed: %s",
-                            account.account_id, attempt, UPLOAD_RETRIES, exc,
-                        )
-                        if attempt < UPLOAD_RETRIES:
-                            await asyncio.sleep(min(2 ** (attempt - 1), 8))
-
-                logger.error("Backblaze B2 %s upload failed", account.account_id)
-
-            raise last or RuntimeError("Backblaze B2 upload failed")
-        finally:
-            try:
-                os.remove(snapshot)
-            except OSError:
-                pass
-
-    async def download(self, account_id, object_key):
-        """Download with S3 GetObject directly; boto3 download_fileobj may issue HeadObject first."""
-        account = self._account(account_id)
-        fd, path = tempfile.mkstemp(prefix="pastele_b2_")
-        os.close(fd)
-
-        def run():
-            response = account.client.get_object(
-                Bucket=account.bucket,
-                Key=str(object_key),
+        else:
+            client.upload_fileobj(
+                fh, account["bucket"], object_key
             )
-            body = response.get("Body")
-            if body is None:
-                raise RuntimeError(
-                    f"Backblaze GetObject returned no body: account={account_id}, key={object_key}"
-                )
-            try:
-                with open(path, "wb") as fh:
-                    for chunk in body.iter_chunks(chunk_size=1024 * 1024):
-                        if chunk:
-                            fh.write(chunk)
-            finally:
-                body.close()
-            return response
+    return {
+        "account_id": int(account["account_id"]),
+        "bucket": account["bucket"],
+        "object_key": object_key,
+        "file_size": int(file_size or 0),
+        "content_type": content_type or "application/octet-stream",
+        "storage": "backblaze_b2",
+    }
 
-        try:
-            response = await asyncio.to_thread(run)
-            downloaded_size = await asyncio.to_thread(os.path.getsize, path)
-            expected_size = int(response.get("ContentLength") or 0)
-            if downloaded_size <= 0:
-                raise RuntimeError(
-                    f"Backblaze returned an empty object: account={account_id}, key={object_key}"
-                )
-            if expected_size and downloaded_size != expected_size:
-                raise RuntimeError(
-                    f"Backblaze download size mismatch: expected={expected_size}, "
-                    f"downloaded={downloaded_size}, account={account_id}, key={object_key}"
-                )
-            meta = {
-                "ContentLength": downloaded_size,
-                "ContentType": response.get("ContentType"),
-                "ETag": response.get("ETag"),
-            }
-            logger.info(
-                "Backblaze B2 %s GetObject success: key=%s size=%s",
-                account_id, object_key, downloaded_size,
-            )
-            return path, meta
-        except Exception:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            raise
 
-    async def delete(self, account_id, object_key):
-        try:
-            account = self._account(account_id)
-            await asyncio.to_thread(
-                account.client.delete_object,
-                Bucket=account.bucket,
-                Key=str(object_key),
-            )
-            return True
-        except Exception:
-            logger.exception("Backblaze B2 delete failed")
+async def upload_file_to_b2(
+    local_path: str,
+    *,
+    file_name: str = "file",
+    content_type: Optional[str] = None,
+    account_id: Optional[int] = None,
+    object_prefix: str = "pastelebot",
+) -> Optional[dict[str, Any]]:
+    """Upload one local file to the configured B2 account.
+
+    Returns None on any B2 failure. Callers must keep Telegram file_id.
+    """
+    try:
+        account = (
+            await get_b2_account(account_id)
+            if account_id
+            else await get_upload_account()
+        )
+        if not account:
+            return None
+
+        size = Path(local_path).stat().st_size
+        safe = _safe_name(file_name)
+        object_key = f"{object_prefix}/{os.urandom(12).hex()}_{safe}"
+        ctype = content_type or mimetypes.guess_type(file_name)[0]
+
+        result = await asyncio.to_thread(
+            _upload_sync,
+            account,
+            local_path,
+            object_key,
+            ctype,
+            size,
+        )
+        logger.info(
+            "B2 UPLOAD OK | account=%s | key=%s | size=%s",
+            result["account_id"], result["object_key"], result["file_size"],
+        )
+        return result
+    except Exception:
+        logger.exception("B2 UPLOAD FAILED; Telegram file_id remains fallback")
+        return None
+
+
+async def download_file_from_b2(
+    account_id: int,
+    object_key: str,
+    destination: str,
+) -> bool:
+    """Download one B2 object to a local file.
+
+    Failures are returned as False so the caller can show a controlled
+    error instead of crashing the bot.
+    """
+    try:
+        account = await get_b2_account(int(account_id))
+        if not account:
+            logger.error("B2 DOWNLOAD: account %s not configured", account_id)
             return False
 
-    async def health(self, account_id):
-        account=self._account(account_id)
-        started=__import__("time").perf_counter()
-        await asyncio.to_thread(account.client.head_bucket,Bucket=account.bucket)
-        ms=round((__import__("time").perf_counter()-started)*1000,1)
-        return {"account_id":account.account_id,"bucket":account.bucket,"region":account.region,"endpoint":account.endpoint,"latency_ms":ms,"ok":True}
+        def _download_sync():
+            client = _client(account)
+            bucket = str(account["bucket"]).strip()
+            key = str(object_key).lstrip("/")
+            # boto3 download_file() internally calls HeadObject. Some B2 keys
+            # can be permitted to read objects without HeadObject permission,
+            # so stream the object directly with GetObject.
+            response = client.get_object(Bucket=bucket, Key=key)
+            body = response["Body"]
+            try:
+                with open(destination, "wb") as fh:
+                    while True:
+                        chunk = body.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+            finally:
+                body.close()
 
-    async def stats(self, account_id):
-        account=self._account(account_id)
-        total=0; count=0
-        def run():
-            nonlocal total,count
-            paginator=account.client.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=account.bucket):
-                for obj in page.get("Contents",[]):
-                    count += 1; total += int(obj.get("Size") or 0)
-        await asyncio.to_thread(run)
-        return {"account_id":account.account_id,"bucket":account.bucket,"objects":count,"bytes":total}
-
-    async def move_object(self, from_account_id, to_account_id, object_key):
-        src=self._account(from_account_id); dst=self._account(to_account_id)
-        if src.account_id==dst.account_id: return True
-        await asyncio.to_thread(
-            dst.client.copy_object,
-            CopySource={"Bucket":src.bucket,"Key":str(object_key)},
-            Bucket=dst.bucket,Key=str(object_key)
+        await asyncio.to_thread(_download_sync)
+        logger.info(
+            "B2 DOWNLOAD OK | account=%s | bucket=%s | key=%s",
+            account_id, account.get("bucket"), object_key,
         )
-        await asyncio.to_thread(dst.client.head_object,Bucket=dst.bucket,Key=str(object_key))
-        await asyncio.to_thread(src.client.delete_object,Bucket=src.bucket,Key=str(object_key))
         return True
+    except Exception as exc:
+        logger.exception(
+            "B2 DOWNLOAD FAILED | account=%s | bucket=%s | region=%s | endpoint=%s | key=%s | error=%s",
+            account_id, account.get("bucket"), account.get("region"),
+            account.get("endpoint"), object_key, str(exc)[:500],
+        )
+        return False
 
 
-b2_pool = B2Pool()
-# Compatibility name used by existing handlers; it now points to B2, not Backblaze B2.
-drive_pool = b2_pool
+async def check_b2_account(account_id: int) -> dict[str, Any]:
+    """Non-destructive B2 health check for the Admin panel."""
+    try:
+        account = await get_b2_account(int(account_id))
+        if not account:
+            return {"ok": False, "account_id": int(account_id), "error": "account_not_configured"}
+
+        def _check():
+            client = _client(account)
+            client.head_bucket(Bucket=account["bucket"])
+            return True
+
+        await asyncio.to_thread(_check)
+        return {
+            "ok": True,
+            "account_id": int(account_id),
+            "bucket": account["bucket"],
+            "region": account["region"],
+        }
+    except Exception as exc:
+        logger.warning("B2 HEALTH FAILED | account=%s | %s", account_id, exc)
+        return {
+            "ok": False,
+            "account_id": int(account_id),
+            "error": str(exc)[:240],
+        }

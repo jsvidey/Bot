@@ -1,89 +1,208 @@
-import httpx,re,unicodedata,logging
-from config import BAYARGG_API_KEY,BAYARGG_BASE_URL,BAYARGG_WEBHOOK_URL
-log=logging.getLogger(__name__)
+import json
+import logging
+import httpx
+import re
+import unicodedata
 
-def clean_name(name):
-    name=unicodedata.normalize("NFKC",str(name or "Customer")).encode("ascii","ignore").decode("ascii")
-    name=re.sub(r"[^A-Za-z0-9 .,_-]","",name)
-    return re.sub(r"\s+"," ",name).strip()[:50] or "Customer"
+from config import BAYARGG_API_KEY
 
-def _unwrap(raw):
-    if not isinstance(raw,dict): return {}
-    d=raw.get("data") if isinstance(raw.get("data"),dict) else {}
-    if isinstance(raw.get("result"),dict): d={**d,**raw["result"]}
-    return {**d,**raw}
+logger = logging.getLogger(__name__)
 
-def _status(v):
-    return str(v or "").strip().lower().replace("-","_").replace(" ","_")
+BASE_URL = "https://www.bayar.gg/api"
 
-def _amount(v,default=0):
-    try:return int(float(v if v not in (None,"") else default))
-    except (TypeError,ValueError):return int(default)
+
+def clean_customer_name(name: str) -> str:
+    if not name:
+        return "Customer"
+
+    # Ubah font Unicode menjadi huruf biasa
+    name = unicodedata.normalize("NFKC", name)
+
+    # Hapus emoji & karakter non-ASCII
+    name = name.encode("ascii", "ignore").decode("ascii")
+
+    # Sisakan huruf, angka, spasi, titik, koma, strip, underscore
+    name = re.sub(r"[^A-Za-z0-9 .,_-]", "", name)
+
+    # Rapikan spasi
+    name = re.sub(r"\s+", " ", name).strip()
+
+    # Maksimal 50 karakter
+    return name[:50] or "Customer"
+
 
 class BayarGG:
-    PAYMENT_METHOD="qris"
-    PAYMENT_URL="https://www.bayar.gg/pay"
 
     @staticmethod
-    async def create_payment(amount,description,callback_url=None,customer_name=None):
-        amount=_amount(amount)
-        if not BAYARGG_API_KEY or amount<5000 or amount>500000:
-            return None
-        payload={
-            "amount":amount,
-            "description":str(description or "")[:200],
-            "customer_name":clean_name(customer_name),
-            "payment_url":BayarGG.PAYMENT_URL,
-            "payment_method":BayarGG.PAYMENT_METHOD,
-            "callback_url":str(callback_url or BAYARGG_WEBHOOK_URL),
+    async def create_payment(
+        amount: int,
+        description: str,
+        payment_url: str = "https://www.bayar.gg/pay",
+        callback_url: str | None = None,
+        redirect_url: str | None = None,
+        customer_name: str | None = None,
+        customer_phone: str | None = None,
+        payment_method: str = "qris",
+    ):
+
+        headers = {
+            "X-API-Key": BAYARGG_API_KEY,
+            "Content-Type": "application/json"
         }
-        payload={k:v for k,v in payload.items() if v not in (None,"")}
+
+        logger.info(
+            f"API KEY LENGTH: {len(BAYARGG_API_KEY)}"
+        )
+
+        logger.info(
+            f"HEADERS: {headers.keys()}"
+        )
+
+        payload = {
+            "amount": amount,
+            "description": description,
+            "payment_url": payment_url,
+            "payment_method": payment_method,
+        }
+
+        if callback_url:
+            payload["callback_url"] = callback_url
+
+        if redirect_url:
+            payload["redirect_url"] = redirect_url
+
+        # Selalu bersihkan customer_name
+        original_name = customer_name or "Customer"
+        customer_name = clean_customer_name(original_name)
+
+        if original_name != customer_name:
+            logger.warning(
+                "Customer name sanitized: '%s' -> '%s'",
+                original_name,
+                customer_name,
+            )
+
+        payload["customer_name"] = customer_name
+
+        if customer_phone:
+            payload["customer_phone"] = customer_phone
+
         try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                r=await c.post(
-                    f"{BAYARGG_BASE_URL}/create-payment.php",
-                    headers={"X-API-Key":BAYARGG_API_KEY,"Content-Type":"application/json","Accept":"application/json"},
-                    json=payload,
+            logger.info("🚀 CREATE PAYMENT")
+            logger.info(json.dumps(payload, indent=2, ensure_ascii=False))
+
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.post(
+                    f"{BASE_URL}/create-payment.php",
+                    headers=headers,
+                    json=payload
                 )
-                try: raw=r.json()
-                except Exception: raw={"raw":r.text}
-            log.info("BAYARGG CREATE HTTP %s | %s",r.status_code,raw)
-            if r.status_code>=400 or not isinstance(raw,dict) or raw.get("success") is False:
+
+            logger.info(f"STATUS: {response.status_code}")
+            logger.info(f"BODY: {response.text}")
+
+            if response.status_code >= 400:
+                logger.error(
+                    "BAYARGG ERROR JSON: %s",
+                    response.text
+                )
                 return None
-            d=_unwrap(raw)
-            inv=d.get("invoice_id") or d.get("invoice") or d.get("id")
-            qr=d.get("qris_string") or d.get("qris") or d.get("qr_string") or d.get("qr")
-            if not inv or not qr:
-                log.error("BAYARGG create missing invoice/QR: %s",raw)
-                return None
-            final=_amount(d.get("final_amount"),_amount(d.get("amount"),amount))
-            return {"invoice_id":str(inv),"qr_string":qr if isinstance(qr,str) else None,
-                    "payment_url":d.get("payment_url") or BayarGG.PAYMENT_URL,
-                    "amount":final,"final_amount":final,"expires_at":d.get("expires_at"),
-                    "status":_status(d.get("status"))}
-        except Exception:
-            log.exception("BAYARGG create payment failed")
+
+            raw = response.json()
+
+            if not raw.get("success"):
+                raise Exception(
+                    raw.get("error")
+                    or raw.get("message")
+                    or str(raw)
+                )
+
+            data = raw.get("data", raw)
+
+            # =========================
+            # NORMALISASI DATA (PENTING)
+            # =========================
+            invoice_id = (
+                data.get("invoice_id")
+                or data.get("id")
+                or data.get("invoice")
+            )
+
+            qr_string = (
+                data.get("qris_string")
+                or data.get("qris")
+                or data.get("qr_string")
+                or data.get("qr")
+            )
+
+            final_amount = (
+                data.get("final_amount")
+                or data.get("amount")
+                or amount
+            )
+
+            if not invoice_id:
+                raise Exception("Invoice ID tidak ditemukan")
+
+            if not qr_string:
+                raise Exception("QR string tidak ditemukan")
+
+            return {
+                "invoice_id": invoice_id,
+                "qris_string": qr_string,
+                "payment_url": data.get("payment_url"),
+                "expires_at": data.get("expires_at"),
+                "final_amount": final_amount,
+                "status": data.get("status"),
+            }
+
+        except Exception as e:
+            logger.exception(f"❌ CREATE PAYMENT ERROR: {e}")
             return None
 
     @staticmethod
-    async def check_payment(invoice):
-        if not BAYARGG_API_KEY:return None
+    async def check_payment(invoice_id: str):
+
+        headers = {
+            "X-API-Key": BAYARGG_API_KEY
+        }
+
         try:
-            async with httpx.AsyncClient(timeout=30) as c:
-                r=await c.get(
-                    f"{BAYARGG_BASE_URL}/check-payment.php",
-                    headers={"X-API-Key":BAYARGG_API_KEY,"Accept":"application/json"},
-                    params={"invoice":str(invoice)},
+            async with httpx.AsyncClient(timeout=30) as client:
+                response = await client.get(
+                    f"{BASE_URL}/check-payment.php",
+                    headers=headers,
+                    params={"invoice": invoice_id}
                 )
-                try: raw=r.json()
-                except Exception: raw={"raw":r.text}
-            if r.status_code>=400:return None
-            d=_unwrap(raw)
-            amount=_amount(d.get("final_amount"),_amount(d.get("amount"),0))
-            return {"invoice_id":str(d.get("invoice_id") or d.get("invoice") or invoice),
-                    "status":_status(d.get("status") or d.get("payment_status")),
-                    "amount":amount,"final_amount":amount,
-                    "payment_method":d.get("payment_method"),"paid_at":d.get("paid_at"),"raw":d}
-        except Exception:
-            log.exception("BAYARGG check payment failed")
+
+            logger.info(f"CHECK STATUS: {response.status_code}")
+            logger.info(f"CHECK BODY: {response.text}")
+
+            response.raise_for_status()
+
+            raw = response.json()
+
+            if not raw.get("success"):
+                raise Exception(
+                    raw.get("error")
+                    or raw.get("message")
+                    or str(raw)
+                )
+
+            data = raw.get("data", raw)
+
+            status = str(
+                data.get("status")
+                or data.get("payment_status")
+                or ""
+            ).lower()
+
+            return {
+                "invoice_id": invoice_id,
+                "status": status,
+                "raw": data
+            }
+
+        except Exception as e:
+            logger.exception(f"❌ CHECK PAYMENT ERROR: {e}")
             return None
