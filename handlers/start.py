@@ -1,432 +1,847 @@
-from aiogram import Router, F
 import logging
-from aiogram.filters import CommandStart, Command
-from aiogram.fsm.context import FSMContext
+
+from aiogram import Router, F
+from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from aiogram.exceptions import TelegramBadRequest
+
+from utils.force_sub import check_force_sub
+from keyboards.menu import home_kb
+from keyboards.join import join_kb
 from database import get_pool
-from keyboards.menu import home_kb, channel_reply_kb, CHANNEL_ADMIN_URL, CHANNEL_UPDATE_URL
-from utils.economy import ensure_user
-from middlewares.subscription import subscription_prompt
-from utils.callback_loading import loading
-from utils.i18n import get_lang, set_lang, SUPPORTED
-from utils.admin_access import admin_access
+from utils.user_lang import get_user_language
+from utils.force_sub import get_missing_channels
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from utils.share_unlock import record_new_member_open
+
 
 router = Router()
-logger = logging.getLogger(__name__)
 
-WELCOME = {
-    "id": (
-        "👋 <b>SELAMAT DATANG DI GG BOT</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "📥 <b>CARA MENGGUNAKAN BOT</b>\n"
-        "Kirim <i>Media Code</i> untuk mulai mencari dan membuka media.\n\n"
-        "🔑 <b>MENU BOT</b>\n"
-        "• <a href='tg://bot_command?command=start'>/start</a> — Muat ulang bot\n"
-        "• <a href='tg://bot_command?command=code'>/code</a> — Jelajahi daftar Code\n"
-        "• <a href='tg://bot_command?command=vipbot'>/vipbot</a> — Akses semua Code bot\n"
-        "• <a href='tg://bot_command?command=vip'>/vip</a> — Informasi akses VIP Group\n"
-        "• <a href='tg://bot_command?command=group'>/group</a> — Informasi grup\n\n"
-        "📋 <b>CHANNEL &amp; GRUP RESMI</b>\n"
-        '📢 <a href="https://t.me/+vM6UWm69_6gyMjNk">Channel Update</a>\n'
-        '🌟 <a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\n'
-        '🛠 <a href="https://t.me/botstips">Bot &amp; Website Development</a>\n\n'
-        "━━━━━━━━━━━━━━━━━━\n"
-        "✨ <b>Belum punya Code?</b> Tekan menu <b>🔑 Code</b> untuk melihat daftar.\n"
-        "⭐ Tekan judul Code untuk membuka halaman review dan melihat media terkait.\n\n"
-        "📩 <b>Silakan kirim Media Code untuk melanjutkan.</b>"
-    ),
-    "en": (
-        "👋 <b>WELCOME TO GG BOT</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "📥 <b>HOW TO USE</b>\n"
-        "Send a <i>Media Code</i> to find and open media.\n\n"
-        "🔑 <b>BOT MENU</b>\n"
-        "• <a href='tg://bot_command?command=start'>/start</a> — Refresh the bot\n"
-        "• <a href='tg://bot_command?command=code'>/code</a> — Browse all Codes\n"
-        "• <a href='tg://bot_command?command=vipbot'>/vipbot</a> — Access all bot Codes\n"
-        "• <a href='tg://bot_command?command=vip'>/vip</a> — VIP Group access information\n"
-        "• <a href='tg://bot_command?command=group'>/group</a> — Group information\n\n"
-        "📋 <b>OFFICIAL CHANNELS &amp; GROUPS</b>\n"
-        '📢 <a href="https://t.me/+vM6UWm69_6gyMjNk">Updates Channel</a>\n'
-        '🌟 <a href="https://t.me/noticsaluran">Big Update Rare Channel</a>\n'
-        '🛠 <a href="https://t.me/+ezE2-f-YtEo4NzU1">Bot &amp; Website Development</a>\n\n'
-        "━━━━━━━━━━━━━━━━━━\n"
-        "✨ <b>No Code yet?</b> Tap the <b>🔑 Code</b> menu to browse the list.\n"
-        "⭐ Tap a Code title to open its review page and view related media.\n\n"
-        "📩 <b>Send a Media Code to continue.</b>"
-    ),
-}
 
-def language_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🇮🇩 Indonesia", callback_data="lang:id"),
-        InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
-    ]])
+# =========================================================
+# CEK KREATOR TERVERIFIKASI
+# =========================================================
 
-async def language_prompt(target, edit=False):
-    text = "🌐 <b>Pilih Bahasa / Choose Language</b>\n\nSilakan pilih bahasa bot / Please choose your bot language:"
-    if edit:
-        await target.edit_text(text, parse_mode="HTML", reply_markup=language_kb())
-    else:
-        await target.answer(text, parse_mode="HTML", reply_markup=language_kb())
+def creator_verified(user) -> bool:
 
-async def welcome_text(user, lang):
-    import html
-    template = WELCOME.get(lang, WELCOME["id"])
-    name = html.escape(user.full_name or user.username or str(user.id))
-    return template.replace("{name}", name)
+    if not user:
+        return False
 
-async def show_welcome(target, user, lang, edit=False, show_channels=True):
-    text = await welcome_text(user, lang)
-    # Welcome message contains clickable channel links in its text; no inline buttons.
-    reply_kb = channel_reply_kb(lang)
-    sent = None
-    if edit:
-        try:
-            await target.edit_text(text, parse_mode="HTML", disable_web_page_preview=True)
-            sent = target
-        except Exception:
-            sent = await target.answer(
-                text, parse_mode="HTML", disable_web_page_preview=True,
-                reply_markup=reply_kb if show_channels else None
-            )
-        # Editing an existing message cannot attach a ReplyKeyboardMarkup.
-        # Send the keyboard as a separate message only for edit-based flows.
-        if show_channels:
-            try:
-                await target.bot.send_message(user.id, "⬇️ Menu" if lang == "id" else "⬇️ Menu", reply_markup=reply_kb)
-            except Exception:
-                pass
-    else:
-        # Attach the persistent keyboard to the welcome message itself so it
-        # is immediately visible below the chat and is not a separate hidden message.
-        sent = await target.answer(
-            text, parse_mode="HTML", disable_web_page_preview=True,
-            reply_markup=reply_kb if show_channels else None
-        )
-    # Pin the welcome message where Telegram allows it; failure is non-fatal.
+    return (
+        bool(user["is_creator"])
+        and user["creator_status"] == "approved"
+    )
+
+
+# =========================================================
+# /START
+# =========================================================
+
+@router.message(CommandStart())
+async def start_cmd(
+    message: Message,
+    state: FSMContext
+):
+
+    # /start always opens a compact language selector.
+    # The original deep-link argument is kept in FSM so referral/code links are not lost.
+    payload = message.text.split(maxsplit=1)[1].strip() if len(message.text.split(maxsplit=1)) > 1 else ""
+    await state.clear()
+    await state.update_data(start_payload=payload)
+
+    user_id = message.from_user.id
+
+    username = (
+        f"@{message.from_user.username}"
+        if message.from_user.username
+        else message.from_user.full_name
+    )
+
+    loading = await message.answer(
+        "⚡ Loading..."
+    )
+
     try:
-        msg = sent if isinstance(sent, Message) else getattr(target, "message", None)
-        if msg:
-            await target.bot.pin_chat_message(chat_id=user.id, message_id=msg.message_id, disable_notification=True)
-    except Exception:
-        pass
 
-@router.message(F.chat.type == "private", CommandStart(deep_link=True))
-async def start(m: Message):
-    """Handle /start and Telegram deep links such as /start JSShow_xxx.
-
-    A deep-link must never fail silently: database or code lookup failures are
-    logged and a short user-facing message is returned.
-    """
-    payload = ""
-    logger.info("Incoming /start update: user_id=%s chat_id=%s text=%r", m.from_user.id, m.chat.id, m.text)
-    try:
-        parts = (m.text or "").strip().split(maxsplit=1)
-        payload = parts[1].strip() if len(parts) == 2 else ""
-        is_referral_start = payload.startswith("ref_")
-
-        # Acknowledge deep-link opens quickly so the user can see that the bot
-        # received the payload, even if database lookups take a moment.
-        if payload and not is_referral_start:
-            try:
-                await m.bot.send_chat_action(m.chat.id, "typing")
-            except Exception:
-                pass
-
-        p = await get_pool()
-        existing_user = await p.fetchval(
-            "SELECT 1 FROM users WHERE user_id=$1", m.from_user.id
-        )
-        await ensure_user(m.from_user.id, m.from_user.username, m.from_user.full_name)
-
-        if not existing_user and is_referral_start:
-            token = payload[4:].strip()
-            invite = await p.fetchrow(
-                "SELECT inviter_id FROM free_code_invites WHERE token=$1", token
-            ) if token else None
-            if invite and int(invite["inviter_id"]) != int(m.from_user.id):
-                await p.execute(
-                    """INSERT INTO free_code_referrals(invite_token,invited_user_id)
-                       VALUES($1,$2) ON CONFLICT(invited_user_id) DO NOTHING""",
-                    token, m.from_user.id
-                )
-
-        await p.execute(
-            "UPDATE users SET bot_started_at=COALESCE(bot_started_at,NOW()) WHERE user_id=$1",
-            m.from_user.id
+        await process_start(
+            message,
+            loading,
+            user_id,
+            username,
+            state=state,
+            force_language=False,
+            start_arg=payload,
+            from_user=message.from_user
         )
 
-        # Save the deep-link code BEFORE force-join validation. If the user
-        # must join channels first, verify_join/language selection can resume it.
-        if payload and not is_referral_start:
-            await p.execute(
-                "UPDATE users SET pending_start_code=$1 WHERE user_id=$2",
-                payload, m.from_user.id
-            )
+    except Exception as e:
 
-        if not await subscription_prompt(m.bot, m.chat.id, m.from_user.id):
-            return
-
-        lang = await get_lang(m.from_user.id)
-        if not lang:
-            pending = payload if payload and not is_referral_start else None
-            await p.execute(
-                "UPDATE users SET pending_start_code=$1 WHERE user_id=$2",
-                pending, m.from_user.id
-            )
-            return await language_prompt(m)
-
-        if payload and not is_referral_start:
-            from handlers.getfile import show
-            status = None
-            try:
-                await p.execute(
-                    "UPDATE users SET pending_start_code=NULL WHERE user_id=$1",
-                    m.from_user.id
-                )
-                status = await m.answer("⏳ Kode diterima, sedang dibuka...")
-                result = await show(m, payload)
-                if status:
-                    try: await status.delete()
-                    except Exception: pass
-                logger.info(
-                    "Deep-link response completed: user_id=%s payload=%s result_message_id=%s",
-                    m.from_user.id, payload, getattr(result, "message_id", None)
-                )
-                return result
-            except Exception:
-                logger.exception(
-                    "Deep-link code open failed: user_id=%s payload=%s",
-                    m.from_user.id, payload
-                )
-                error_text = (
-                    "⚠️ <b>Code ditemukan, tetapi gagal ditampilkan.</b>\n"
-                    "Silakan coba lagi. Jika masih gagal, hubungi admin."
-                )
-                try:
-                    if status:
-                        return await status.edit_text(error_text, parse_mode="HTML")
-                    return await m.answer(error_text, parse_mode="HTML")
-                except Exception:
-                    logger.exception("Could not send deep-link failure notice: user_id=%s", m.from_user.id)
-                    raise
-
-        return await show_welcome(m, m.from_user, lang)
-
-    except Exception:
-        logger.exception(
-            "Start handler failed: user_id=%s payload=%s",
-            getattr(getattr(m, "from_user", None), "id", None), payload
+        logging.exception(
+            f"START ERROR: {e}"
         )
+
         try:
-            await m.answer(
-                "⚠️ <b>Bot menerima perintah, tetapi sedang mengalami kendala.</b>\\n"
-                "Silakan coba /start beberapa saat lagi. Jika masih sama, hubungi admin.",
+
+            await loading.edit_text(
+                "❌ <b>SYSTEM ERROR</b>\n\n"
+                "Terjadi kesalahan saat membuka bot.",
                 parse_mode="HTML"
             )
+
         except Exception:
             pass
 
-@router.callback_query(F.data.startswith("lang:"))
-async def choose_language(c: CallbackQuery):
-    lang = c.data.split(":", 1)[1]
-    if lang not in {"id", "en"}:
-        return await c.answer("Language unavailable.", show_alert=True)
-    if not await subscription_prompt(c.bot, c.from_user.id, c.from_user.id):
-        return await c.answer("Join both required channels first.", show_alert=True)
-    await set_lang(c.from_user.id, lang)
+
+# =========================================================
+# PROCESS START
+# =========================================================
+
+async def process_start(
+    message: Message,
+    loading: Message,
+    user_id: int,
+    username: str,
+    state: FSMContext | None = None,
+    force_language: bool = False,
+    start_arg: str = "",
+    from_user=None
+):
+
+    bot = message.bot
+    tg_user = from_user or message.from_user
+
+    # =====================================================
+    # SAVE / UPDATE MEMBER PADA SETIAP /START
+    # =====================================================
+    # Member tetap dicatat walaupun force-sub belum terpenuhi.
+    # Ini membuat daftar member/admin selalu terisi.
+    pool = await get_pool()
+
+    existing_user = await pool.fetchval(
+        "SELECT 1 FROM users WHERE user_id=$1",
+        user_id
+    )
+    is_new_user = existing_user is None
+
+    await pool.execute(
+        """
+        INSERT INTO users(
+            user_id,
+            chat_id,
+            username,
+            full_name,
+            fullname,
+            language,
+            last_seen
+        )
+        VALUES($1, $1, $2, $3, $3, NULL, NOW())
+        ON CONFLICT(user_id)
+        DO UPDATE SET
+            chat_id = EXCLUDED.chat_id,
+            username = EXCLUDED.username,
+            full_name = EXCLUDED.full_name,
+            fullname = EXCLUDED.fullname,
+            last_seen = NOW()
+        """,
+        user_id,
+        tg_user.username,
+        tg_user.full_name
+    )
+
+    # =====================================================
+    # CODE SHARE DEEP-LINK
+    # Format: s_<owner_id>_<code>. Sharing itself never awards points.
+    # The +1 is recorded only when the shared code is actually opened.
+    # =====================================================
+    pending_share_owner = None
+    pending_share_code = None
+    if start_arg.startswith("s_"):
+        try:
+            parts = start_arg.split("_", 2)
+            if len(parts)==3 and parts[1].isdigit():
+                pending_share_owner=int(parts[1]); pending_share_code=parts[2].strip()
+                shared_file=await pool.fetchrow("SELECT code,owner_id FROM files WHERE LOWER(TRIM(code))=LOWER(TRIM($1)) LIMIT 1",pending_share_code)
+                if shared_file and int(shared_file["owner_id"] or 0)==pending_share_owner:
+                    start_arg=shared_file["code"]
+                    if state is not None: await state.update_data(start_payload=start_arg)
+                else:
+                    pending_share_owner=None; pending_share_code=None
+        except Exception:
+            logging.exception("SHARE DEEPLINK PARSE ERROR | user=%s | payload=%s",user_id,start_arg)
+
+    # Language is selected once; /start reuses the saved language.
+    # The selector is shown only when no language has been saved (or when explicitly forced).
+    current_lang = await pool.fetchval(
+        "SELECT language FROM users WHERE user_id=$1",
+        user_id
+    )
+    if force_language or not current_lang:
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🇮🇩 Indonesia", callback_data="lang:id"),
+                InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
+                InlineKeyboardButton(text="🇨🇳 中文", callback_data="lang:zh"),
+            ]
+        ])
+        await loading.edit_text(
+            "🌐 <b>Pilih Bahasa / Choose Language / 选择语言</b>\n\n"
+            "🇮🇩 Indonesia\n🇬🇧 English\n🇨🇳 中文",
+            parse_mode="HTML", reply_markup=kb
+        )
+        return
+
+    # =====================================================
+    # FORCE SUB
+    # =====================================================
+
     try:
-        import bot as botmod
-        botmod._LANG_CACHE[c.from_user.id] = lang
+
+        subscribed = await check_force_sub(
+            bot,
+            user_id
+        )
+
+    except Exception:
+
+        logging.exception(
+            "FORCE SUB CHECK ERROR"
+        )
+
+        # Fail closed: a membership check error must never unlock the dashboard.
+        subscribed = False
+
+    if not subscribed:
+
+        try:
+
+            bot_username = (
+                await bot.me()
+            ).username
+
+        except Exception:
+
+            bot_username = None
+
+        lang = current_lang or "id"
+        missing = await get_missing_channels(bot, user_id)
+        names = "\n".join(f"• <b>{x['name']}</b>" for x in missing)
+        text = (
+            "❌ <b>WAJIB JOIN CHANNEL</b>\n\nSilakan join channel yang belum kamu ikuti:\n" + names + "\n\nSetelah itu tekan <b>✅ Saya Sudah Join</b>."
+            if lang == "id" else
+            "❌ <b>CHANNEL JOIN REQUIRED</b>\n\nPlease join the channel(s) you have not joined:\n" + names + "\n\nThen press <b>✅ I Joined</b>."
+            if lang == "en" else
+            "❌ <b>需要加入频道</b>\n\n请加入尚未加入的频道：\n" + names + "\n\n完成后点击 <b>✅ 我已加入</b>。"
+        )
+        await loading.edit_text(
+            text,
+            reply_markup=join_kb(bot_username, user_id, lang),
+            parse_mode="HTML"
+        )
+
+        return
+
+    # User sudah disimpan di awal process_start.
+
+    # =====================================================
+    # AMBIL PARAMETER /START
+    # =====================================================
+
+    args = ["/start"] + ([start_arg] if start_arg else [])
+
+    # =====================================================
+    # REFERRAL
+    #
+    # /start ref_123456
+    # =====================================================
+
+    if (
+        len(args) > 1
+        and args[1].startswith("ref_")
+    ):
+
+        if is_new_user:
+
+            ref_id_text = args[1].replace(
+                "ref_",
+                "",
+                1
+            )
+
+            if ref_id_text.isdigit():
+
+                ref_id = int(
+                    ref_id_text
+                )
+
+                # Tidak boleh referral diri sendiri
+                if ref_id != user_id:
+
+                    # Pastikan referral user ada
+                    ref_exists = await pool.fetchval(
+                        """
+                        SELECT 1
+                        FROM users
+                        WHERE user_id = $1
+                        """,
+                        ref_id
+                    )
+
+                    if ref_exists:
+
+                        # Cek apakah sudah punya referral
+                        existing_referral = await pool.fetchval(
+                            """
+                            SELECT referred_by
+                            FROM users
+                            WHERE user_id = $1
+                            """,
+                            user_id
+                        )
+
+                        if not existing_referral:
+
+                            # Simpan pemilik referral
+                            await pool.execute(
+                                """
+                                UPDATE users
+                                SET referred_by = $1
+                                WHERE user_id = $2
+                                """,
+                                ref_id,
+                                user_id
+                            )
+
+                            # Tambahkan referral + bonus secara atomic.
+                            # referral_count adalah counter utama yang dipakai
+                            # Account, Reward, dan Creator.
+                            await pool.execute(
+                                """
+                                UPDATE users
+                                SET
+                                    referral_count = COALESCE(referral_count, 0) + 1,
+                                    total_referral = COALESCE(total_referral, 0) + 1,
+                                    balance = COALESCE(balance, 0) + 200,
+                                    updated_at = NOW()
+                                WHERE user_id = $1
+                                """,
+                                ref_id
+                            )
+
+                            # Notifikasi pemilik referral
+                            try:
+
+                                await bot.send_message(
+                                    ref_id,
+
+                                    "🎉 <b>Referral Berhasil!</b>\n\n"
+                                    "👤 Pengguna baru bergabung.\n"
+                                    "💰 Bonus: <b>Rp200</b>\n\n"
+                                    "Saldo otomatis bertambah.",
+
+                                    parse_mode="HTML"
+                                )
+
+                            except Exception:
+
+                                logging.exception(
+                                    "REFERRAL NOTIFICATION ERROR"
+                                )
+
+                            try:
+                                from utils.referral import check_referral_reward
+                                reward = await check_referral_reward(pool, ref_id)
+                                if reward:
+                                    await bot.send_message(
+                                        ref_id,
+                                        f"🎁 <b>Referral Reward</b>\n\n{reward}\n\nTerima kasih sudah mengajak member baru!",
+                                        parse_mode="HTML"
+                                    )
+                            except Exception:
+                                logging.exception("REFERRAL REWARD ERROR")
+
+    # =====================================================
+    # /START DENGAN CODE
+    #
+    # Contoh:
+    # /start abc123
+    # =====================================================
+
+    elif len(args) > 1:
+
+        code = args[1].strip()
+
+        if not code:
+
+            return await render_home_fast(
+                bot,
+                loading,
+                user_id,
+                username
+            )
+
+        # Hapus loading
+        try:
+
+            await loading.delete()
+
+        except Exception:
+            pass
+
+        # Review codes are public preview codes and never enter the paid media
+        # access flow. Media codes continue through the canonical payment gate.
+        if code.lower().startswith("pastelereview_"):
+            from handlers.review_code import send_review
+            result = await send_review(message, code)
+        else:
+            # Import setelah diperlukan.
+            # IMPORTANT: reward is granted only AFTER the code is actually
+            # opened through the canonical Get File flow.
+            from handlers.getfile import process_code
+            result = await process_code(message, code)
+
+        if pending_share_owner and pending_share_code:
+            try:
+                shared_file = await pool.fetchrow(
+                    "SELECT code, owner_id, is_paid FROM files "
+                    "WHERE LOWER(TRIM(code))=LOWER(TRIM($1)) LIMIT 1",
+                    pending_share_code,
+                )
+                # A share-open reward is for a real free-code open. Paid
+                # codes are rewarded only through their normal purchase flow.
+                if (
+                    shared_file
+                    and not bool(shared_file["is_paid"])
+                    and int(shared_file["owner_id"] or 0) != user_id
+                ):
+                    media_count = await pool.fetchval(
+                        "SELECT COALESCE(media_count,0) FROM files WHERE code=$1",
+                        shared_file["code"],
+                    )
+                    opener_points = await pool.fetchval(
+                        "SELECT COALESCE(points,0) FROM users WHERE user_id=$1",
+                        user_id,
+                    )
+                    # Get File only opens a FREE code when the opener has
+                    # enough points for the entry gate. Reward only then.
+                    if float(opener_points or 0) >= int(media_count or 0):
+                        from utils.share_unlock import record_new_member_open
+                        awarded = await record_new_member_open(
+                            pool,
+                            shared_file["code"],
+                            pending_share_owner,
+                            user_id,
+                        )
+                    else:
+                        awarded = False
+                    if awarded:
+                        owner_points = await pool.fetchval(
+                            "SELECT points FROM users WHERE user_id=$1",
+                            pending_share_owner,
+                        )
+                        owner_lang = await pool.fetchval(
+                            "SELECT language FROM users WHERE user_id=$1",
+                            pending_share_owner,
+                        ) or "id"
+                        notify = {
+                            "id": (
+                                "🎉 <b>+1 POIN</b>\n\n"
+                                f"Code <code>{shared_file['code']}</code> "
+                                "berhasil dibuka oleh 1 pengguna unik.\n"
+                                f"⭐ Poin kamu sekarang: <b>{owner_points}</b>"
+                            ),
+                            "en": (
+                                "🎉 <b>+1 POINT</b>\n\n"
+                                f"Code <code>{shared_file['code']}</code> "
+                                "was opened by 1 unique user.\n"
+                                f"⭐ Your points: <b>{owner_points}</b>"
+                            ),
+                            "zh": (
+                                "🎉 <b>+1 积分</b>\n\n"
+                                f"代码 <code>{shared_file['code']}</code> "
+                                "已被 1 位独立用户打开。\n"
+                                f"⭐ 当前积分：<b>{owner_points}</b>"
+                            ),
+                        }.get(owner_lang, None)
+                        if notify:
+                            try:
+                                await bot.send_message(
+                                    pending_share_owner,
+                                    notify,
+                                    parse_mode="HTML",
+                                )
+                            except Exception:
+                                logging.exception(
+                                    "SHARE OWNER NOTIFY ERROR | owner=%s",
+                                    pending_share_owner,
+                                )
+            except Exception:
+                logging.exception(
+                    "SHARE POINT AWARD ERROR | owner=%s code=%s opener=%s",
+                    pending_share_owner,
+                    pending_share_code,
+                    user_id,
+                )
+
+        return result
+
+    # =====================================================
+    # HOME
+    # =====================================================
+
+    user = await pool.fetchrow(
+        """
+        SELECT
+            username,
+            fullname,
+            balance,
+            points,
+            total_referral,
+            is_creator,
+            creator_status
+        FROM users
+        WHERE user_id = $1
+        """,
+        user_id
+    )
+
+    display_username = (
+        user["username"]
+        if user and user["username"]
+        else username
+    )
+
+    await render_home_fast(
+        bot,
+        loading,
+        user_id,
+        display_username
+    )
+
+
+# =========================================================
+# RENDER HOME
+# =========================================================
+
+async def render_home_fast(
+    bot,
+    message,
+    user_id: int,
+    username: str
+):
+
+    pool = await get_pool()
+
+    # =====================================================
+    # BOT USERNAME
+    # =====================================================
+
+    try:
+
+        bot_username = (
+            await bot.me()
+        ).username
+
+    except Exception:
+
+        bot_username = None
+
+    # =====================================================
+    # REFERRAL LINK
+    # =====================================================
+
+    if bot_username:
+
+        ref_link = (
+            f"https://t.me/"
+            f"{bot_username}"
+            f"?start=ref_{user_id}"
+        )
+
+    else:
+
+        ref_link = "-"
+
+    # =====================================================
+    # USER DATA
+    # =====================================================
+
+    user = await pool.fetchrow(
+        """
+        SELECT
+            balance,
+            points,
+            total_referral,
+            is_creator,
+            creator_status,
+            language
+        FROM users
+        WHERE user_id = $1
+        """,
+        user_id
+    )
+
+    lang = (user["language"] or "id") if user else "id"
+
+    if user:
+
+        balance = (
+            user["balance"] or 0
+        )
+
+        points = user["points"] or 0
+
+        referral = (
+            user["total_referral"] or 0
+        )
+
+        is_creator = creator_verified(
+            user
+        )
+
+    else:
+
+        balance = 0
+        points = 0
+        referral = 0
+        is_creator = False
+
+    # =====================================================
+    # CLEAN MARKET DASHBOARD
+    # =====================================================
+    status = "TERVERIFIKASI ✅" if is_creator else "BELUM TERVERIFIKASI 🔒"
+    balance_text = f"Rp {int(balance):,}".replace(",", ".")
+    points_text = str(points)
+    if lang == "en":
+        text = (
+            "<b>✨ MARKET DASHBOARD ✨</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"🆔 ID : <code>{user_id}</code>\n"
+            f"🎨 Status : <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n"
+            f"💰 Balance : <b>{balance_text}</b>\n"
+            f"⭐ Points : <b>{points_text}</b>\n"
+            f"👥 Referral : <b>{referral}</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "🔗 Referral Link :\n"
+            f"<code>{ref_link}</code>"
+        )
+    elif lang == "zh":
+        text = (
+            "<b>✨ 市场控制面板 ✨</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"🆔 ID：<code>{user_id}</code>\n"
+            f"🎨 状态：<b>{'已认证 ✅' if is_creator else '未认证 🔒'}</b>\n"
+            f"💰 余额：<b>{balance_text}</b>\n"
+            f"⭐ 积分：<b>{points_text}</b>\n"
+            f"👥 推荐：<b>{referral}</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "🔗 推荐链接：\n"
+            f"<code>{ref_link}</code>"
+        )
+    else:
+        text = (
+            "<b>✨ MARKET DASHBOARD ✨</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"🆔 ID : <code>{user_id}</code>\n"
+            f"🎨 Status : <b>{status}</b>\n"
+            f"💰 Saldo : <b>{balance_text}</b>\n"
+            f"⭐ Poin : <b>{points_text}</b>\n"
+            f"👥 Referral : <b>{referral}</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "🔗 Link Referral :\n"
+            f"<code>{ref_link}</code>"
+        )
+
+    # =====================================================
+    # EDIT LOADING
+    # =====================================================
+
+    try:
+
+        await message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=home_kb(user_id, lang),
+            disable_web_page_preview=True
+        )
+
+    except TelegramBadRequest as e:
+
+        if "message is not modified" in str(e).lower():
+            return
+
+        raise
+
+    except Exception:
+
+        try:
+
+            await bot.send_message(
+                user_id,
+                text,
+                parse_mode="HTML",
+                reply_markup=home_kb(user_id, lang),
+                disable_web_page_preview=True
+            )
+
+        except Exception:
+
+            logging.exception(
+                "RENDER HOME ERROR"
+            )
+
+
+# =========================================================
+# HOME BUTTON
+# =========================================================
+
+@router.callback_query(
+    F.data == "home"
+)
+async def back_home(
+    call: CallbackQuery,
+    state: FSMContext
+):
+
+    await state.clear()
+
+    user_id = call.from_user.id
+
+    # =====================================================
+    # FORCE SUB
+    # =====================================================
+
+    try:
+
+        subscribed = await check_force_sub(
+            call.bot,
+            user_id
+        )
+
+    except Exception:
+
+        logging.exception(
+            "HOME FORCE SUB ERROR"
+        )
+
+        subscribed = True
+
+    if not subscribed:
+
+        try:
+
+            bot_username = (
+                await call.bot.me()
+            ).username
+
+        except Exception:
+
+            bot_username = None
+
+        await call.message.answer(
+            "❌ <b>JOIN REQUIRED</b>\n\n"
+            "Silakan join semua channel terlebih dahulu.",
+
+            parse_mode="HTML",
+
+            reply_markup=join_kb(
+                bot_username,
+                user_id
+            )
+        )
+
+        return await call.answer()
+
+    # =====================================================
+    # USER
+    # =====================================================
+
+    pool = await get_pool()
+
+    user = await pool.fetchrow(
+        """
+        SELECT
+            username,
+            fullname
+        FROM users
+        WHERE user_id = $1
+        """,
+        user_id
+    )
+
+    if user:
+
+        username = (
+            user["username"]
+            or user["fullname"]
+            or "unknown"
+        )
+
+    else:
+
+        username = "unknown"
+
+    # =====================================================
+    # RENDER HOME
+    # =====================================================
+
+    await render_home_fast(
+        call.bot,
+        call.message,
+        user_id,
+        username
+    )
+
+    await call.answer()
+
+
+# =========================================================
+# LANGUAGE SELECTION
+# =========================================================
+@router.callback_query(F.data.startswith("lang:"))
+async def choose_language(call: CallbackQuery, state: FSMContext):
+    lang = call.data.split(":", 1)[1]
+    if lang not in ("id", "en", "zh"):
+        return await call.answer("Invalid language.", show_alert=True)
+    pool = await get_pool()
+    await pool.execute("UPDATE users SET language=$1 WHERE user_id=$2", lang, call.from_user.id)
+    try:
+        await call.answer({"id": "Bahasa disimpan.", "en": "Language saved.", "zh": "语言已保存。"}.get(lang, "Bahasa disimpan."))
     except Exception:
         pass
-    p = await get_pool()
-    pending = await p.fetchval("SELECT pending_start_code FROM users WHERE user_id=$1", c.from_user.id)
-    await p.execute("UPDATE users SET pending_start_code=NULL WHERE user_id=$1", c.from_user.id)
-    await c.answer()
-    if pending:
-        from handlers.getfile import show
-        return await show(c.message, pending, user_id=c.from_user.id)
-    await show_welcome(c.message, c.from_user, lang, edit=True)
 
-@router.message(F.chat.type == "private", F.text.in_({"📣 Channel Admin", "📣 Admin Channel"}))
-async def open_admin_channel(m: Message):
-    lang = await get_lang(m.from_user.id) or "id"
-    await m.answer(
-        ("📣 <b>Channel Admin</b>\nTekan tautan untuk membuka channel admin." if lang != "en" else "📣 <b>Admin Channel</b>\nTap the link to open the admin channel."),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📣 Buka Channel Admin" if lang != "en" else "📣 Open Admin Channel", url=CHANNEL_ADMIN_URL)]
-        ])
-    )
+    data = await state.get_data()
+    start_arg = (data.get("start_payload") or "").strip()
+    await state.clear()
 
-@router.message(F.chat.type == "private", F.text.in_({"📢 Channel Update", "📢 Updates Channel"}))
-async def open_updates_channel(m: Message):
-    lang = await get_lang(m.from_user.id) or "id"
-    await m.answer(
-        ("📢 <b>Channel Update</b>\nTekan tautan untuk membuka channel update." if lang != "en" else "📢 <b>Updates Channel</b>\nTap the link to open the updates channel."),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Buka Channel Update" if lang != "en" else "📢 Open Updates Channel", url=CHANNEL_UPDATE_URL)]
-        ])
-    )
-
-
-
-# Reply-keyboard menu handlers: these buttons send ordinary text, not callback queries.
-@router.message(F.chat.type == "private", F.text.in_({"⭐ Review", "⭐ Review & Rating"}))
-async def reply_review(m: Message):
-    lang = await get_lang(m.from_user.id) or "id"
-    await m.bot.send_chat_action(m.chat.id, "typing")
-    await m.answer(
-        "⭐ <b>Review &amp; Rating</b>\n\nPilih Code melalui menu Code, lalu gunakan tombol Like, Hate, atau Favorite pada halaman Code." if lang == "id" else
-        "⭐ <b>Reviews &amp; Ratings</b>\n\nChoose a code from Code, then use Like, Hate, or Favorite on its code page.",
-        parse_mode="HTML"
-    )
-
-@router.message(F.chat.type == "private", F.text.in_({"📥 Getfile", "📥 Buka Media", "📥 Open Media"}))
-async def reply_getfile(m: Message):
-    lang = await get_lang(m.from_user.id) or "id"
-    await m.bot.send_chat_action(m.chat.id, "typing")
-    await m.answer("📥 Kirim kode media yang ingin dibuka." if lang == "id" else "📥 Send the media code you want to open.")
-
-@router.message(F.chat.type == "private", F.text.in_({"👑 VIP Bot", "💎 VIP Bot", "💎 VIP"}))
-async def reply_vip(m: Message):
-    from database import get_pool
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    lang = await get_lang(m.from_user.id) or "id"
-    await m.bot.send_chat_action(m.chat.id, "typing")
-    rows = await (await get_pool()).fetch("SELECT code,name,price FROM vip_packages WHERE active ORDER BY price")
-    buttons = [[InlineKeyboardButton(text=f"{r['name']} • Rp{int(r['price']):,}".replace(',', '.'), callback_data=f"vip:{r['code']}")] for r in rows]
-    buttons += [[InlineKeyboardButton(text="🛍️ Ambil Sebagian",callback_data="vipsome")], [InlineKeyboardButton(text="🛒 Ambil Semua",callback_data="vipall")], [InlineKeyboardButton(text="ℹ️ About",callback_data="vipabout"),InlineKeyboardButton(text="🎁 Donasi",callback_data="vipdonate")]]
-    await m.answer("💎 <b>VIP BOT</b>\n\nPilih paket berlangganan VIP Bot di bawah ini. Link grup VIP tersedia melalui perintah /vip.", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-@router.message(F.chat.type == "private", F.text.in_({"🔑 Code", "🔑 Code"}))
-async def reply_codes(m: Message):
-    from handlers.misc import _render_code_command
-    await m.bot.send_chat_action(m.chat.id, "typing")
-    await _render_code_command(m, "all")
-
-
-
-
-@router.message(F.chat.type == "private", F.text.in_({"🎁 Ambil Code Free", "🎁 Get Free Code"}))
-async def free_codes_button(m: Message):
-    from handlers.misc import send_free_codes
-    await send_free_codes(m, 0)
-
-@router.message(F.chat.type == "private", F.text == "💬 Support")
-async def reply_support(m: Message, state: FSMContext):
-    from handlers.support import msg_start
-    await msg_start(m, state)
-
-@router.message(F.chat.type == "private", F.text.in_({"❓ Bantuan", "❓ Help"}))
-async def reply_help(m: Message):
-    from handlers.misc import _help_pages, _help_keyboard
-    lang = await get_lang(m.from_user.id) or "id"
-    if lang not in {"id", "en"}: lang = "id"
-    await m.bot.send_chat_action(m.chat.id, "typing")
-    await m.answer(_help_pages(lang)[0], parse_mode="HTML", reply_markup=await _help_keyboard(lang, 0, m.from_user.id))
-
-
-
-@router.message(F.chat.type == "private", Command("vipbot"))
-async def vipbot_command(m: Message):
-    from handlers.misc import vipbot_menu
-    await vipbot_menu(m)
-
-@router.message(F.chat.type == "private", Command("vip"))
-async def vip_group_command(m: Message):
-    from handlers.vip import show_vip_group_menu
-    await show_vip_group_menu(m)
-
-@router.message(F.chat.type == "private", Command("group"))
-async def group_command(m: Message):
-    from handlers.misc import vip_group_menu
-    await vip_group_menu(m)
-
-@router.message(F.chat.type == "private", Command("code"))
-async def code_command(m: Message):
-    from handlers.misc import _render_code_command
-    await _render_code_command(m, "all")
-
-@router.message(F.chat.type == "private", Command("setting"))
-async def setting(m: Message):
-    if not await subscription_prompt(m.bot, m.chat.id, m.from_user.id):
-        return
-    lang = await get_lang(m.from_user.id) or "id"
-    title = "🌐 <b>Pengaturan Bahasa</b>\nPilih bahasa:" if lang == "id" else "🌐 <b>Language Settings</b>\nChoose your language:"
-    await m.answer(title, parse_mode="HTML", reply_markup=language_kb())
-
-@router.callback_query(F.data == "change_language")
-async def change_language(c: CallbackQuery):
-    await c.answer()
-    await language_prompt(c.message, edit=True)
-
-@router.callback_query(F.data == "home")
-async def home(c: CallbackQuery):
-    await loading(c)
-    await ensure_user(c.from_user.id, c.from_user.username, c.from_user.full_name)
-    await show_welcome(c.message, c.from_user, await get_lang(c.from_user.id) or "id", edit=True, show_channels=False)
-
-@router.callback_query(F.data == "verify_join")
-async def verify_join(c: CallbackQuery):
-    if not await subscription_prompt(c.bot, c.from_user.id, c.from_user.id):
-        return await c.answer("Please join both channels first.", show_alert=True)
-    await ensure_user(c.from_user.id, c.from_user.username, c.from_user.full_name)
-    p = await get_pool()
-    pending = await p.fetchval(
-        "SELECT pending_start_code FROM users WHERE user_id=$1",
-        c.from_user.id
-    )
-    lang = await get_lang(c.from_user.id)
-    await c.answer()
-    if not lang:
-        return await language_prompt(c.message, edit=True)
-    if pending:
-        await p.execute(
-            "UPDATE users SET pending_start_code=NULL WHERE user_id=$1",
-            c.from_user.id
+    missing = await get_missing_channels(call.bot, call.from_user.id)
+    if missing:
+        lines = (
+            ["❌ <b>Kamu harus bergabung ke semua channel.</b>",
+             "Masuk ke channel yang belum kamu ikuti, lalu tekan <b>✅ Saya Sudah Join</b>."]
+            if lang == "id" else
+            ["❌ <b>You must join all required channels.</b>",
+             "Join every channel you left, then press <b>✅ I Joined</b>."]
         )
-        from handlers.getfile import show
-        return await show(c.message, pending, user_id=c.from_user.id)
-    await show_welcome(c.message, c.from_user, lang, edit=True)
-
-@router.callback_query(F.data == "review")
-async def review(c: CallbackQuery):
-    lang = await get_lang(c.from_user.id) or "id"
-    await c.answer()
-    await c.message.answer(
-        "⭐ <b>Review &amp; Rating</b>\n\nPilih Code melalui menu Code, lalu gunakan tombol Like, Hate, atau Favorite pada halaman Code." if lang == "id" else
-        "⭐ <b>Reviews &amp; Ratings</b>\n\nChoose a code from Code, then use Like, Hate, or Favorite on its code page.",
-        parse_mode="HTML", reply_markup=await home_kb(c.from_user.id, lang)
-    )
-
-@router.message(F.chat.type == "private", Command("codetop"))
-async def codetop(m: Message):
-    from handlers.misc import _render_code_command
-    await _render_code_command(m, "top")
-
-@router.message(F.chat.type == "private", Command("search", "searchcode"))
-async def searchcode(m: Message):
-    parts = (m.text or "").split(maxsplit=1)
-    if len(parts) < 2:
-        lang = await get_lang(m.from_user.id) or "id"
-        await m.answer("Kirim /search diikuti kode yang dicari." if lang == "id" else "Send /search followed by the code to search.")
+        for ch in missing:
+            lines.append(f"• <b>{ch['name']}</b>")
+        me = await call.bot.get_me()
+        await call.message.edit_text(
+            "\n\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=join_kb(me.username, call.from_user.id, lang)
+        )
         return
-    from handlers.getfile import show
-    await show(m, parts[1].strip())
 
-@router.message(F.chat.type == "private", Command("mypurchases", "mypurchaces"))
-async def mypurchases(m: Message):
-    lang = await get_lang(m.from_user.id) or "id"
-    p = await get_pool()
-    rows = await p.fetch("""SELECT code, MAX(expires_at) AS expires_at FROM unlock_transactions
-        WHERE user_id=$1 AND payment_type IN ('qr','admin') GROUP BY code ORDER BY MAX(created_at) DESC LIMIT 20""", m.from_user.id)
-    if not rows:
-        return await m.answer("Kamu belum memiliki riwayat pembelian Code." if lang == "id" else "You have no Code purchase history yet.")
-    lines = ["🧾 <b>Pembelian Saya</b>" if lang == "id" else "🧾 <b>My Purchases</b>"]
-    for r in rows:
-        lines.append(f"• <code>{r['code']}</code>")
-    await m.answer("\n".join(lines), parse_mode="HTML")
+    user = await pool.fetchrow("SELECT username, fullname FROM users WHERE user_id=$1", call.from_user.id)
+    display = (user["username"] or user["fullname"] or "unknown") if user else "unknown"
+    # Preserve /start deep-links (including referral links) after language selection.
+    await process_start(
+        call.message,
+        call.message,
+        call.from_user.id,
+        display,
+        force_language=False,
+        start_arg=start_arg,
+        from_user=call.from_user
+    )

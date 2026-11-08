@@ -1,998 +1,1054 @@
-from __future__ import annotations
-
+import asyncio
+import json
+import asyncio
+import logging
 import re
-from datetime import datetime,timedelta,timezone
-import html,json,os,tempfile,asyncio,re
-from aiogram import Router,F
-from aiogram.types import Message,CallbackQuery,InlineKeyboardMarkup,InlineKeyboardButton,InputMediaPhoto,InputMediaVideo,InputMediaDocument,InputMediaAudio,BufferedInputFile
+import time
+
+from typing import Dict
+from contextlib import asynccontextmanager
+
+from aiogram.filters import StateFilter
+from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
+
 from database import get_pool
-from utils.economy import unlock,is_vip,vip_allowed
-from utils.media_sender import deliver_one, deliver_telegram_file_id
-from utils.notify_channel import notify
-from utils.callback_loading import loading
-from config import MEDIA_SEND_DELAY_MS,BOT_USERNAME
-from utils.payments import create_purchase,qr_bytes,enabled
-from handlers.payments import ManualProofState
-router=Router()
+from utils.user import get_user_status
+from utils.user_lang import get_user_language
+from utils.language import translate
 
-# ---------------------------------------------------------------------------
-# 3-LANGUAGE USER TEXT
-# Language is read from the same user preference used by the Dashboard.
-# ---------------------------------------------------------------------------
-try:
-    from utils.i18n import get_lang
-except Exception:
-    async def get_lang(uid):
-        return "id"
 
-def _L(lang, key, **kw):
-    lang = str(lang or "id").lower()
-    if lang not in ("id", "en", "zh"):
-        lang = "id"
-    T = {
-        "back":{"id":"🔙 Kembali","en":"🔙 Back","zh":"🔙 返回"},
-        "invalid_code":{"id":"❌ Code tidak valid.","en":"❌ Invalid code.","zh":"❌ Code 无效。"},
-        "send_code":{"id":"📥 Kirim CODE yang ingin dibuka.","en":"📥 Send the CODE you want to open.","zh":"📥 发送你要打开的 CODE。"},
-        "not_found":{"id":"❌ Code tidak ditemukan.","en":"❌ Code not found.","zh":"❌ 未找到该 Code。"},
-        "like":"Like", "hate":"Hate", "favorite":{"id":"⭐ Favorit","en":"⭐ Favorite","zh":"⭐ 收藏"},
-        "open_code":{"id":"📥 Buka Code","en":"📥 Open Code","zh":"📥 打开 Code"},
-        "own_open":{"id":"📂 Buka Code (Gratis)","en":"📂 Open Code (Free)","zh":"📂 打开 Code（免费）"},
-        "own_title":{"id":"🔓 <b>CODE MILIK SENDIRI</b>","en":"🔓 <b>YOUR OWN CODE</b>","zh":"🔓 <b>你的 Code</b>"},
-        "own_desc":{"id":"Media milikmu dapat dibuka gratis.","en":"Your own media can be opened for free.","zh":"自己的媒体可以免费打开。"},
-        "paid_access":{"id":"<b>CODE SUDAH DIBAYAR</b>\n\nCode: <code>{code}</code>\nNominal: {price}\n\nAkses aktif sampai 24 jam setelah pembayaran.","en":"<b>CODE ALREADY PAID</b>\n\nCode: <code>{code}</code>\nAmount: {price}\n\nAccess is active for 24 hours after payment.","zh":"<b>CODE 已付款</b>\n\nCode：<code>{code}</code>\n金额：{price}\n\n付款后访问权限有效 24 小时。"},
-        "open_paid":{"id":"Buka Media","en":"Open Media","zh":"打开媒体"},
-        "vip_open":{"id":"💎 Buka Gratis (VIP)","en":"💎 Open Free (VIP)","zh":"💎 免费打开（VIP）"},
-        "open_title":{"id":"🔐 <b>OPEN CODE</b>","en":"🔐 <b>OPEN CODE</b>","zh":"🔐 <b>打开 CODE</b>"},
-        "choose_payment":{"id":"Pilih pembayaran:","en":"Choose a payment method:","zh":"请选择支付方式："},
-        "choose_open":{"id":"Pilih cara membuka:","en":"Choose how to open:","zh":"请选择打开方式："},
-        "cannot_open":{"id":"❌ Tidak dapat membuka media.","en":"❌ Unable to open the media.","zh":"❌ 无法打开媒体。"},
-        "success_open":{"id":"✅ Berhasil dibuka!","en":"✅ Opened successfully!","zh":"✅ 打开成功！"},
-        "own_success":{"id":"✅ Membuka code milik sendiri...","en":"✅ Opening your own code...","zh":"✅ 正在打开你的 Code…"},
-        "private_chat":{"id":"Buka chat pribadi dengan bot untuk menerima media.","en":"Open a private chat with the bot to receive the media.","zh":"请打开与机器人的私聊以接收媒体。"},
-        "media_corrupt":{"id":"❌ Data media rusak: {err}","en":"❌ Media data is corrupted: {err}","zh":"❌ 媒体数据损坏：{err}"},
-        "all_sent":{"id":"Semua media sudah terkirim.","en":"All media have already been sent.","zh":"所有媒体都已发送。"},
-        "sent":{"id":"📦 <b>{sent}</b> media berhasil dikirim.","en":"📦 <b>{sent}</b> media sent successfully.","zh":"📦 已成功发送 <b>{sent}</b> 个媒体。"},
-        "done":{"id":"✅ <b>Semua media selesai dikirim.</b>\n📦 Total: <b>{total}</b>","en":"✅ <b>All media have been sent.</b>\n📦 Total: <b>{total}</b>","zh":"✅ <b>所有媒体发送完成。</b>\n📦 总数：<b>{total}</b>"},
-        "continue":{"id":"▶️ Lanjut kirim","en":"▶️ Continue","zh":"▶️ 继续发送"},
-        "cancel":{"id":"❌ Batal","en":"❌ Cancel","zh":"❌ 取消"},
-        "stopped":{"id":"Pengiriman dihentikan.","en":"Sending stopped.","zh":"发送已停止。"},
-        "cancelled":{"id":"❌ Pengiriman media dibatalkan.","en":"❌ Media delivery cancelled.","zh":"❌ 媒体发送已取消。"},
-        "expired":{"id":"⏳ Akses code sudah habis.","en":"⏳ Code access has expired.","zh":"⏳ Code 访问权限已过期。"},
-        "not_owner":{"id":"❌ Code ini bukan milikmu.","en":"❌ This code does not belong to you.","zh":"❌ 此 Code 不属于你。"},
-        "payment_success":{"id":"✅ Pembayaran berhasil!","en":"✅ Payment successful!","zh":"✅ 支付成功！"},
-        "free_code":{"id":"Code ini gratis.","en":"This code is free.","zh":"此 Code 免费。"},
-        "qr_min":{"id":"Tidak ada metode QR yang mendukung nominal ini.","en":"No QR payment method supports this amount.","zh":"没有支持此金额的二维码支付方式。"},
-        "qr_missing":{"id":"QR manual belum dipasang admin.","en":"Manual QR has not been configured by the admin.","zh":"管理员尚未设置手动二维码。"},
-        "all_payment_fail":{"id":"Semua metode pembayaran tidak tersedia.","en":"All payment methods are unavailable.","zh":"所有支付方式均不可用。"},
-        "all_payment_amount":{"id":"Semua metode pembayaran tidak tersedia untuk nominal ini.","en":"No payment method is available for this amount.","zh":"此金额没有可用的支付方式。"},
-        "check_payment":{"id":"Cek Pembayaran","en":"Check Payment","zh":"检查支付"},
-        "cancel_payment":{"id":"Batal","en":"Cancel","zh":"取消"},
-        "manual_caption":{"id":"QR MANUAL\n\nCode: <code>{code}</code>\nNominal: {amount}\n\nSetelah membayar, tekan Cek Pembayaran lalu kirim screenshot bukti.","en":"MANUAL QR\n\nCode: <code>{code}</code>\nAmount: {amount}\n\nAfter paying, tap Check Payment and send the payment screenshot.","zh":"手动二维码\n\nCode：<code>{code}</code>\n金额：{amount}\n\n付款后点击“检查支付”，然后发送付款截图。"},
-        "payment_caption":{"id":"PAYMENT\n\nCode: <code>{code}</code>\nNominal: {amount}\nProvider: {provider}\nInvoice: <code>{invoice}</code>\n\nSetelah membayar, tekan Cek Pembayaran.","en":"PAYMENT\n\nCode: <code>{code}</code>\nAmount: {amount}\nProvider: {provider}\nInvoice: <code>{invoice}</code>\n\nAfter paying, tap Check Payment.","zh":"支付\n\nCode：<code>{code}</code>\n金额：{amount}\n支付商：{provider}\nInvoice：<code>{invoice}</code>\n\n付款后点击“检查支付”。"},
-        "media_missing":{"id":"⚠️ <b>MEDIA TIDAK TERSEDIA</b>","en":"⚠️ <b>MEDIA UNAVAILABLE</b>","zh":"⚠️ <b>媒体不可用</b>"},
-        "failed_sent":{"id":"Media gagal dikirim: <b>{n}</b>","en":"Failed to send media: <b>{n}</b>","zh":"发送失败的媒体：<b>{n}</b>"},
-    }
-    v=T.get(key)
-    if isinstance(v,str): return v.format(**kw)
-    if isinstance(v,dict): return v.get(lang,v["id"]).format(**kw)
-    return key.format(**kw)
+router = Router()
 
-async def _lang(uid):
+logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+UPDATE_DELAY = 0.5
+
+CODE_PREFIX = "Pastelebot_"
+CODE_TOTAL_LENGTH = 24
+CODE_SUFFIX_LENGTH = 14
+CODE_MIN_LENGTH = CODE_TOTAL_LENGTH
+CODE_MAX_LENGTH = CODE_TOTAL_LENGTH
+
+
+# ============================================================
+# USER LOCK
+# ============================================================
+
+_last_update: Dict[int, float] = {}
+_user_locks: Dict[int, asyncio.Lock] = {}
+
+
+def get_lock(user_id: int) -> asyncio.Lock:
+    """
+    Satu user tidak boleh menjalankan beberapa proses Get File
+    secara bersamaan.
+    """
+
+    user_id = int(user_id)
+
+    if user_id not in _user_locks:
+        _user_locks[user_id] = asyncio.Lock()
+
+    return _user_locks[user_id]
+
+
+@asynccontextmanager
+async def user_lock(user_id: int):
+    async with get_lock(user_id):
+        yield
+
+
+# ============================================================
+# FSM
+# ============================================================
+
+class GetFileState(StatesGroup):
+    waiting_code = State()
+
+
+# ============================================================
+# CALLBACK SAFE ANSWER
+# ============================================================
+
+async def safe_callback_answer(
+    call: CallbackQuery,
+    text: str | None = None,
+    show_alert: bool = False,
+):
+    """
+    Menjawab callback Telegram dengan aman.
+
+    CallbackQuery mempunyai batas waktu. Kalau handler terlalu
+    lama dan callback sudah expired, Telegram mengembalikan:
+
+    TelegramBadRequest:
+    query is too old and response timeout expired
+
+    Error ini tidak boleh membuat bot crash.
+    """
+
     try:
-        v=await get_lang(uid)
-        if isinstance(v,str): return v
-    except Exception:
-        pass
-    return "id"
-
-def _btn(lang, key):
-    return _L(lang,key)
-
-
-def fmt(n): return f"Rp{int(n):,}".replace(',','.')
-
-async def code_info_kb(code,title='Code',lang='id'):
-    return InlineKeyboardMarkup(inline_keyboard=[
-      [InlineKeyboardButton(text=f'📝 {title[:40]}',callback_data=f'getcode:{code}')],
-      [InlineKeyboardButton(text='👍 Like',callback_data=f'react:like:{code}'),InlineKeyboardButton(text='👎 Hate',callback_data=f'react:hate:{code}'),InlineKeyboardButton(text=_L(lang,'favorite'),callback_data=f'react:favorite:{code}')],
-      [InlineKeyboardButton(text=_L(lang,'open_code'),callback_data=f'getcode:{code}')],
-      [InlineKeyboardButton(text='🎁 Donasi ⭐',callback_data='vipdonate')],
-      [InlineKeyboardButton(text=_L(lang,'back'),callback_data='home')]
-    ])
-
-async def get_file(code):
-    # Log lookup outcome without exposing media contents or credentials.
-    row = await (await get_pool()).fetchrow(
-        "SELECT * FROM files WHERE (lower(code)=lower($1) OR lower(review_code)=lower($1)) AND active=TRUE",
-        str(code).strip(),
-    )
-    import logging
-    logging.getLogger(__name__).info(
-        "Code lookup: code=%s found=%s", str(code)[:80], bool(row)
-    )
-    return row
-
-async def has_permanent_or_paid_unlock(uid,code):
-    p=await get_pool()
-    return bool(await p.fetchval("""SELECT 1 FROM unlock_transactions WHERE user_id=$1 AND code=$2
-        AND payment_type IN ('qr','admin') AND expires_at>NOW() ORDER BY id DESC LIMIT 1""",uid,code))
-
-async def has_permanent_access(uid,code):
-    p=await get_pool()
-    return bool(await p.fetchval("""SELECT 1 FROM unlock_transactions WHERE user_id=$1 AND code=$2
-        AND payment_type='admin' AND expires_at>NOW() ORDER BY id DESC LIMIT 1""",uid,code))
-
-async def _show_impl(m,code,user_id=None):
-    import logging
-    log = logging.getLogger(__name__)
-    uid=int(user_id or m.from_user.id)
-    log.info("SHOW begin: user_id=%s chat_id=%s code=%s", uid, m.chat.id, str(code)[:80])
-    f=await get_file(code)
-    if not f:
-        log.warning("SHOW code not found: user_id=%s code=%s", uid, str(code)[:80])
-        return await m.answer(_L(await _lang(uid),'invalid_code'))
-    log.info("SHOW row loaded: user_id=%s file_id=%s canonical=%s", uid, f['id'], str(f['code'])[:80])
-    p=await get_pool()
-    canonical=str(f['code'])
-    await p.execute("UPDATE files SET views=views+1 WHERE code=$1", canonical)
-    log.info("SHOW views updated: file_id=%s", f['id'])
-    stats=await p.fetchrow("""SELECT views,likes,hates,favorites FROM files WHERE id=$1""",f['id'])
-    if not stats:
-        raise RuntimeError(f"File stats row missing for file_id={f['id']}")
-    price=int(f['price_idr'] or 0)
-    paid=f"💰 Harga: <b>{fmt(price)}</b>" if price else "🆓 FREE CODE"
-    lang=await _lang(uid)
-    log.info("SHOW prepared: user_id=%s file_id=%s lang=%s", uid, f['id'], lang)
-    review_code = str(f['review_code'] or '')
-    if review_code and str(code).lower() in {review_code.lower(), canonical.lower()}:
-        # Review is intentionally free. Show one review/preview item plus a clear
-        # notification and inline actions; never send the complete paid media here.
-        kb=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='📽️ Buka Media' if lang=='id' else '📽️ Open Media',callback_data=f'getcode:{canonical}')],
-            [InlineKeyboardButton(text='🔎 Cari Code Lain' if lang=='id' else '🔎 Find Another Code',callback_data='getfile')],
-            [InlineKeyboardButton(text='❌ Batal',callback_data='home')],
-        ])
-        server_name = str(f.get('server_name') or '—')
-        from utils.bot_identity import get_bot_username
-        bot_name = await get_bot_username()
-        caption=(
-            f"⭐ <b>REVIEW GRATIS</b>\n\n"
-            f"📝 <b>{html.escape(f['title'] or 'Untitled')}</b>\n"
-            f"⭐ Code review: <code>{html.escape(review_code)}</code>\n"
-            f"🔑 Code media: <code>{html.escape(canonical)}</code>\n"
-            f"💰 Harga: <b>{fmt(price) if price else 'GRATIS'}</b>\n"
-            f"📦 Media: <b>{int(f['media_count'] or 0)}</b>\n"
-            f"🗂 Server: <b>{html.escape(server_name)}</b>\n"
-            + (f"🤖 Bot: @{html.escape(bot_name)}\n" if bot_name else '')
-            + "\n📢 Ini adalah review gratis. Media lengkap hanya tersedia setelah akses dibuka/pembayaran berhasil.\n\n"
-            + ("Penasaran dengan media ini? Tekan tombol <b>Buy Now</b> di bawah." if lang=='id' else "Interested in the full media? Tap <b>Buy Now</b> below.")
+        await call.answer(
+            text=text,
+            show_alert=show_alert,
         )
-        raw_review=f['review_media']
-        try:
-            preview_items=raw_review if isinstance(raw_review,list) else json.loads(raw_review or '[]')
-        except Exception:
-            preview_items=[]
-        preview=preview_items[0] if preview_items else None
-        if preview:
-            try:
-                if preview_items and all(x.get('type')=='photo' for x in preview_items):
-                    for idx,item in enumerate(preview_items[:5]):
-                        cap=caption if idx==0 else None
-                        try:
-                            if item.get('drive_account') is not None and item.get('drive_file_id'):
-                                await deliver_one(m.bot,m.chat.id,item,caption=cap,reply_markup=kb if idx==0 else None)
-                            else:
-                                await deliver_telegram_file_id(m.bot,m.chat.id,item,caption=cap,reply_markup=kb if idx==0 else None)
-                        except Exception:
-                            if item.get('drive_account') is not None and item.get('drive_file_id'):
-                                await deliver_telegram_file_id(m.bot,m.chat.id,item,caption=cap,reply_markup=kb if idx==0 else None)
-                    return
-                if preview.get('drive_account') is not None and preview.get('drive_file_id'):
-                    await deliver_one(m.bot,m.chat.id,preview,caption=caption,reply_markup=kb)
-                else:
-                    await deliver_telegram_file_id(m.bot,m.chat.id,preview,caption=caption,reply_markup=kb)
-                return
-            except Exception as preview_error:
-                try:
-                    await notify(m.bot, f"⚠️ <b>Review preview gagal dikirim</b>\\nCode: <code>{html.escape(review_code)}</code>\\nError: <code>{html.escape(str(preview_error)[:400])}</code>")
-                except Exception:
-                    pass
-        # Text fallback keeps the review information and buttons available even
-        # when the preview image has been deleted or cannot be fetched.
-        return await m.answer(caption,parse_mode='HTML',reply_markup=kb)
-    # Show the separately uploaded preview whenever a user opens the media code.
-    try:
-        raw_preview=f.get('review_media') if hasattr(f,'get') else f['review_media']
-        preview_items=raw_preview if isinstance(raw_preview,list) else json.loads(raw_preview or '[]')
-    except Exception:
-        preview_items=[]
-    try:
-        if preview_items:
-            for idx,item in enumerate(preview_items[:5]):
-                cap=f"🎬 Preview • {html.escape(f['title'] or 'Untitled')}" if idx==0 else None
-                try:
-                    if item.get('drive_account') is not None and item.get('drive_file_id'):
-                        await deliver_one(m.bot,m.chat.id,item,caption=cap)
-                    else:
-                        await deliver_telegram_file_id(m.bot,m.chat.id,item,caption=cap)
-                except Exception:
-                    # Preview is optional; never block opening the actual code.
-                    continue
-    except Exception:
-        pass
-    log.info("SHOW sending summary: user_id=%s file_id=%s", uid, f['id'])
-    sent = await m.answer(
-      f"📦 <b>{html.escape(f['title'] or 'Untitled')}</b>\n\n"
-      f"🔑 <code>{html.escape(canonical)}</code>\n{paid}\n"
-      f"👁 Views: <b>{stats['views']}</b>  👍 <b>{stats['likes']}</b>  👎 <b>{stats['hates']}</b>  ⭐ <b>{stats['favorites']}</b>\n\n"
-      f"Bagikan code ini ke teman-teman untuk membuka media ini.",
-      parse_mode='HTML',reply_markup=await code_info_kb(canonical,f['title'] or 'Code',lang))
-    log.info("SHOW message sent: user_id=%s file_id=%s message_id=%s", uid, f['id'], getattr(sent, 'message_id', None))
-    return sent
 
+    except TelegramBadRequest as exc:
 
-async def show(m, code, user_id=None):
-    """One visible, shared entry point for direct codes, Getfile and deep links."""
-    import logging
-    log = logging.getLogger(__name__)
-    uid = int(user_id or m.from_user.id)
-    status = None
-    try:
-        # Send a visible acknowledgement BEFORE any database/storage work.
-        status = await m.bot.send_message(
-            m.chat.id,
-            "⏳ Kode diterima. Sedang memeriksa dan menyiapkan konten..."
-        )
-        log.info("SHOW wrapper acknowledged: user_id=%s chat_id=%s code=%s status_message_id=%s",
-                 uid, m.chat.id, str(code)[:80], getattr(status, "message_id", None))
-        result = await _show_impl(m, code, user_id=uid)
-        log.info("SHOW wrapper completed: user_id=%s code=%s result_type=%s",
-                 uid, str(code)[:80], type(result).__name__ if result is not None else "None")
-        if status:
-            try:
-                await status.delete()
-            except Exception:
-                pass
-        return result
-    except Exception as exc:
-        log.exception("SHOW wrapper failed: user_id=%s chat_id=%s code=%s",
-                      uid, m.chat.id, str(code)[:80])
-        notice = ("⚠️ Kode berhasil diterima, tetapi konten gagal ditampilkan. "
-                  "Admin perlu memeriksa log bot.")
-        if status:
-            try:
-                await status.edit_text(notice)
-                return None
-            except Exception:
-                pass
-        try:
-            await m.bot.send_message(m.chat.id, notice)
-        except Exception:
-            log.exception("SHOW wrapper could not send failure notice: user_id=%s", uid)
-        return None
+        error_text = str(exc).lower()
 
-
-async def show_server_catalog(target):
-    p=await get_pool()
-    rows=await p.fetch("""SELECT s.server_no,s.name,COUNT(f.id)::int AS file_count,
-      COALESCE(SUM(f.media_count),0)::int AS total_media
-      FROM server_categories s LEFT JOIN files f ON f.active=TRUE
-      AND f.server_name LIKE ('Server '||s.server_no||' —%')
-      WHERE s.enabled=TRUE GROUP BY s.server_no,s.name ORDER BY s.server_no""")
-    buttons=[]
-    for r in rows:
-        if int(r['file_count'] or 0):
-            buttons.append([InlineKeyboardButton(text=f"Server {r['server_no']} — {r['name']} • {r['file_count']} Code • {r['total_media']} media",callback_data=f"catalog:{r['server_no']}:0")])
-    buttons.append([InlineKeyboardButton(text='🔎 Kirim Code langsung',callback_data='getfile:direct')])
-    buttons.append([InlineKeyboardButton(text=_L(await _lang(target.from_user.id),'back'),callback_data='home')])
-    text='🗂 <b>DAFTAR SERVER</b>\n\nJumlah Code dan total media ditampilkan pada setiap server.'
-    try: await target.message.edit_text(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    except Exception: await target.message.answer(text,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-@router.callback_query(F.data=='getfile')
-async def start(c):
-    await loading(c)
-    await show_server_catalog(c)
-
-@router.callback_query(F.data=='getfile:direct')
-async def direct_code_prompt(c):
-    lang=await _lang(c.from_user.id)
-    await c.answer()
-    await c.message.edit_text(_L(lang,'send_code'),reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_L(lang,'back'),callback_data='getfile')]]))
-
-@router.callback_query(F.data.startswith('catalog:'))
-async def catalog_page(c):
-    await loading(c)
-    try: _,server_no,page_raw=c.data.split(':',2); server_no=int(server_no); page=max(0,int(page_raw))
-    except Exception: return await c.answer('Permintaan tidak valid.',show_alert=True)
-    p=await get_pool(); server=await p.fetchrow('SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE',server_no)
-    if not server: return await c.answer('Server tidak tersedia.',show_alert=True)
-    total=int(await p.fetchval("SELECT COUNT(*) FROM files WHERE active=TRUE AND server_name LIKE ('Server '||$1||' —%')",server_no) or 0)
-    pages=max(1,(total+14)//15); page=min(page,pages-1)
-    rows=await p.fetch("""SELECT code,title,media_count,price_idr,views,likes,hates,favorites
-      FROM files WHERE active=TRUE AND server_name LIKE ('Server '||$1||' —%')
-      ORDER BY created_at DESC,id DESC LIMIT 15 OFFSET $2""",server_no,page*15)
-    lines=[f"🗂 <b>SERVER {server_no} • {html.escape(server['name'])}</b>",""]
-    buttons=[]
-    for i,r in enumerate(rows,start=page*15+1):
-        price=int(r['price_idr'] or 0); price_text=f"Rp{price:,}".replace(',','.') if price else 'GRATIS'
-        lines.append(f"{i}. 📝 <b>{html.escape(r['title'] or 'Untitled')}</b> • {int(r['media_count'] or 0)} media 💰 {price_text}")
-        lines.append(f"👁 {int(r['views'] or 0)} • 👍 {int(r['likes'] or 0)} • 👎 {int(r['hates'] or 0)} • ⭐ {int(r['favorites'] or 0)}")
-        buttons.append([InlineKeyboardButton(text=f"📝 {str(r['title'] or 'Untitled')[:45]}",callback_data=f"getreview:{r['code']}")])
-    lines += ['', 'Klik judul Code untuk membuka review gratis dan tombol download.']
-    nav=[]
-    if page>0: nav.append(InlineKeyboardButton(text='⬅️ Sebelumnya',callback_data=f'catalog:{server_no}:{page-1}'))
-    nav.append(InlineKeyboardButton(text=f'{page+1}/{pages}',callback_data='catalog:noop'))
-    if page+1<pages: nav.append(InlineKeyboardButton(text='Berikutnya ➡️',callback_data=f'catalog:{server_no}:{page+1}'))
-    if nav: buttons.append(nav)
-    buttons.append([InlineKeyboardButton(text='🗂 Daftar Server',callback_data='getfile')])
-    buttons.append([InlineKeyboardButton(text='🔙 Kembali',callback_data='home')])
-    await c.answer()
-    await c.message.edit_text('\n'.join(lines),parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-@router.callback_query(F.data=='catalog:noop')
-async def catalog_noop(c): await c.answer()
-
-# Direct CODE input.
-# Do not hard-code the random part of the code: deployments may use a
-# different allowed alphabet/length.  Accept the canonical suffix
-# ``<p>p<v>v<d>d`` and ignore accidental spaces/backticks around the code.
-_CODE_RE = re.compile(r'^(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,40}|[^\s_]+_[^\s_]+_\d+p\d+v\d+d)$', re.I)
-
-@router.message(F.chat.type == 'private', F.text.regexp(re.compile(r'^`?(?:JSShow_[A-Za-z0-9]{8,40}|JSShowreview_[A-Za-z0-9]{6,40}|[^\s_]+_[^\s_]+_\d+p\d+v\d+d)`?$', re.IGNORECASE)))
-async def receive(m):
-    import logging
-    log = logging.getLogger(__name__)
-    raw=(m.text or '').strip()
-    code=raw.strip('`').strip()
-    if not _CODE_RE.fullmatch(code):
-        return await m.answer(_L(await _lang(m.from_user.id), 'invalid_code'))
-    log.info("DIRECT CODE received: user_id=%s code=%s", m.from_user.id, code[:80])
-    try:
-        await show(m,code)
-        log.info("DIRECT CODE flow completed: user_id=%s code=%s", m.from_user.id, code[:80])
-    except Exception:
-        log.exception("DIRECT CODE flow failed: user_id=%s code=%s", m.from_user.id, code[:80])
-        try:
-            await m.answer("⚠️ Kode diterima, tetapi gagal diproses. Admin perlu memeriksa log bot.")
-        except Exception:
-            log.exception("Could not send direct-code failure notice: user_id=%s", m.from_user.id)
-
-
-@router.callback_query(F.data.startswith('getreview:'))
-async def getreview(c):
-    code=c.data.split(':',1)[1]
-    f=await get_file(code)
-    if not f: return await c.answer('Code tidak ditemukan.',show_alert=True)
-    await c.answer()
-    await show(c.message,code,user_id=c.from_user.id)
-
-@router.callback_query(F.data.startswith('getcode:'))
-async def getcode(c):
-    await loading(c); code=c.data.split(':',1)[1]; f=await get_file(code)
-    if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
-    await c.answer()
-    canonical=str(f['code'])
-    await (await get_pool()).execute("UPDATE files SET views=views+1 WHERE code=$1", canonical)
-    await open_choices(c,canonical,f)
-
-async def _show_choices_message(c, text, **kwargs):
-    """Edit text-based menus, but send a new message when invoked from a photo review."""
-    try:
-        return await c.message.edit_text(text, **kwargs)
-    except Exception:
-        return await c.message.answer(text, **kwargs)
-
-
-async def required_join_ok(bot, user_id, f, message):
-    ids=list(f['required_join_channels'] or [])
-    if not ids: return True
-    p=await get_pool(); rows=await p.fetch("SELECT id,title,chat_id,join_url FROM access_join_channels WHERE enabled=TRUE AND id=ANY($1::bigint[]) ORDER BY id",ids)
-    missing=[]
-    for row in rows:
-        try:
-            member=await bot.get_chat_member(int(row['chat_id']),int(user_id))
-            status=getattr(member,'status','')
-            joined=status in {'creator','administrator','member'} or (status=='restricted' and bool(getattr(member,'is_member',False)))
-        except Exception: joined=False
-        if not joined: missing.append(row)
-    if not missing: return True
-    buttons=[]
-    for row in missing:
-        if row['join_url']:
-            buttons.append([InlineKeyboardButton(text=f"📢 Join {str(row['title'])[:35]}",url=row['join_url'])])
-    buttons.append([InlineKeyboardButton(text='🔄 Verifikasi Join',callback_data=f"reqjoin:{f['code']}")])
-    await message.answer('🔒 <b>WAJIB JOIN CHANNEL/GROUP</b>\n\nGabung semua channel/grup berikut terlebih dahulu, lalu tekan Verifikasi Join untuk membuka Code.',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    return False
-
-@router.callback_query(F.data.startswith('reqjoin:'))
-async def verify_required_join(c):
-    code=c.data.split(':',1)[1]; f=await get_file(code)
-    if not f: return await c.answer('Code tidak ditemukan.',show_alert=True)
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message):
-        return await c.answer('Kamu belum join semua channel/grup.',show_alert=True)
-    await c.answer('Join berhasil diverifikasi.')
-    await open_choices(c,code,f)
-
-async def open_choices(c,code,f):
-    lang=await _lang(c.from_user.id)
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
-    uid=c.from_user.id; n=int(f['media_count']); price=int(f['price_idr'] or 0)
-    if int(f['owner_id']) == int(uid):
-        kb=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=_L(lang,'own_open'),callback_data=f'openown:{code}')],
-            [InlineKeyboardButton(text=_L(lang,'back'),callback_data='home')]
-        ])
-        return await _show_choices_message(c, 
-            f"{_L(lang,'own_title')}\n\n"
-            f"📝 {html.escape(f['title'] or 'Untitled')}\n"
-            f"🔑 <code>{html.escape(code)}</code>\n📦 {n} media\n\n"
-            f"{_L(lang,'own_desc')}",
-            parse_mode='HTML',reply_markup=kb
-        )
-    access_mode=str(f['access_mode'] or 'all').lower()
-    if access_mode=='vip' and not await is_vip(uid):
-        kb=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='💎 Beli VIP',callback_data='buy_vip')],
-            [InlineKeyboardButton(text=_L(lang,'back'),callback_data='home')]
-        ])
-        return await _show_choices_message(c, '🔒 Code ini khusus member VIP. Silakan aktifkan paket VIP untuk membuka media.',reply_markup=kb)
-    if access_mode=='free':
-        price=0
-    if price>0 and await has_permanent_or_paid_unlock(uid,code):
-        kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_L(lang,'open_paid'),callback_data=f'openpaid:{code}')],[InlineKeyboardButton(text=_L(lang,'back'),callback_data='home')]])
-        return await _show_choices_message(c, _L(lang,'paid_access',code=html.escape(code),price=fmt(price)),parse_mode='HTML',reply_markup=kb)
-    if await is_vip(uid):
-        kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_L(lang,'vip_open'),callback_data=f'openvip:{code}')],[InlineKeyboardButton(text=_L(lang,'back'),callback_data='home')]])
-    else:
-        rows=[]
-        if price>0:
-            if price >= 7000:
-                has_discount = await (await get_pool()).fetchval("""SELECT 1 FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
-                  WHERE ud.user_id=$1 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses
-                  AND dc.min_price<=$2 AND dc.tier='all' AND (cardinality(dc.package_codes)=0 OR 'media'=ANY(dc.package_codes) OR '*'=ANY(dc.package_codes)) LIMIT 1""", uid, price)
-                if has_discount:
-                    rows.append([InlineKeyboardButton(text='🎟 Pakai Code Discount',callback_data=f'mediadiscount:{code}')])
-            if await enabled('bayargg'): rows.append([InlineKeyboardButton(text='QR 2',callback_data=f'payfile:bayargg:{code}')])
-            if await enabled('cashi'): rows.append([InlineKeyboardButton(text='QR 1',callback_data=f'payfile:cashi:{code}')])
-            if await enabled('manual'): rows.append([InlineKeyboardButton(text='🧾 QR Manual',callback_data=f'payfile:manual:{code}')])
-        else:
-            rows.append([InlineKeyboardButton(text='📥 Buka Media' if lang=='id' else '📥 Open Media',callback_data=f'openfree:{code}')])
-        rows.append([InlineKeyboardButton(text=_L(lang,'back'),callback_data='home')])
-        kb=InlineKeyboardMarkup(inline_keyboard=rows)
-    await _show_choices_message(c, 
-      f"🔐 <b>OPEN CODE</b>\n\n📝 {html.escape(f['title'] or 'Untitled')}\n🔑 <code>{html.escape(code)}</code>\n📦 {n} media\n"
-      +(f"💰 {fmt(price)}\n\n{_L(lang,'choose_payment')}" if price else f"\n{_L(lang,'choose_open')}"),
-      parse_mode='HTML',reply_markup=kb)
-
-async def _send_b2(bot, chat_id, item, caption=None):
-    # Keep one canonical media-delivery implementation.
-    return await deliver_one(bot, chat_id, item, caption=caption)
-
-async def _send_telegram_fallback(bot, chat_id, item, caption=None):
-    from utils.media_sender import deliver_telegram_file_id
-    return await deliver_telegram_file_id(bot, chat_id, item, caption=caption)
-
-async def send_page(bot, chat_id, code, media, page, access_expires_at=None, permanent=False):
-    start = page * 10
-    chunk = media[start:start + 10]
-    missing = []
-    sent = 0
-    total = len(media)
-    pool=await get_pool()
-    file_settings = await pool.fetchrow("SELECT auto_delete,allow_forward,watermark_enabled FROM files WHERE code=$1", code)
-    try:
-        user_tier = await pool.fetchval(
-            "SELECT CASE WHEN vip=TRUE AND (vip_until IS NULL OR vip_until>NOW()) THEN COALESCE(vip_tier,'vip') ELSE 'free' END FROM users WHERE user_id=$1",
-            chat_id,
-        )
-        if user_tier == 'vvip':
-            delay_key = 'vvip_media_send_delay_ms'
-        elif user_tier == 'vip':
-            delay_key = 'vip_media_send_delay_ms'
-        else:
-            delay_key = 'media_send_delay_ms'
-        delay_value = await pool.fetchval("SELECT value FROM settings WHERE key=$1", delay_key)
-        delay_ms=max(0,min(30000,int(delay_value or MEDIA_SEND_DELAY_MS)))
-    except Exception:
-        delay_ms=max(0,int(MEDIA_SEND_DELAY_MS))
-    auto_delete = bool(file_settings and file_settings['auto_delete'])
-    allow_forward = bool(file_settings['allow_forward']) if file_settings else True
-    watermark_enabled = bool(file_settings['watermark_enabled']) if file_settings else True
-
-    for i, item in enumerate(chunk, start + 1):
-        from config import ALL_CODE_CHANNEL_URL
-        if watermark_enabled:
-            default_caption = (
-                f"🔑 Code: {html.escape(str(code))}\n"
-                f"📁 Media {i}/{total}\n"
-                f"🤖 Bot: @{html.escape(await __import__('utils.bot_identity', fromlist=['get_bot_username']).get_bot_username())}\n"
-                f"📢 Channel: <a href=\"{html.escape(str(ALL_CODE_CHANNEL_URL), quote=True)}\">Update</a>\n"
-                f"🛠 <a href=\"https://t.me/botstips\">Channel Backup</a>"
+        if (
+            "query is too old" in error_text
+            or "response timeout expired" in error_text
+            or "query id is invalid" in error_text
+        ):
+            logger.warning(
+                "CALLBACK EXPIRED | user=%s | data=%s",
+                getattr(call.from_user, "id", None),
+                getattr(call, "data", None),
             )
-            custom_watermark = await pool.fetchval("SELECT value FROM settings WHERE key='watermark_text'")
-            if custom_watermark and str(custom_watermark).strip():
-                caption = html.escape(str(custom_watermark).strip())
-                caption = caption.replace('{code}', html.escape(str(code))).replace('{index}', str(i)).replace('{total}', str(total))
-                from utils.bot_identity import get_bot_username
-                caption = caption.replace('{bot}', '@' + html.escape(await get_bot_username())).replace('{channel}', html.escape(str(ALL_CODE_CHANNEL_URL)))
-            else:
-                caption = default_caption
-        else:
-            caption = None
-        delivered = False
-        telegram_error = None
-        b2_error = None
-        last_msg = None
+            return False
 
-        # Small files are stored in B2 and MUST be served from B2 first.
-        # Telegram file_id is the fallback; files above 20 MiB have no B2 key.
-        has_b2 = item.get('drive_account') is not None and bool(item.get('drive_file_id'))
-        if has_b2:
-            try:
-                last_msg = await deliver_one(bot, chat_id, item, caption=caption, protect_content=not allow_forward)
-                delivered = True
-            except Exception as exc:
-                b2_error = str(exc)
-                import logging
-                logging.getLogger(__name__).exception("B2 delivery failed for code=%s media_index=%s chat_id=%s", code, i, chat_id)
-        if not delivered:
-            try:
-                last_msg = await deliver_telegram_file_id(bot, chat_id, item, caption=caption, protect_content=not allow_forward)
-                delivered = True
-            except Exception as exc:
-                telegram_error = str(exc)
-                import logging
-                logging.getLogger(__name__).exception("Telegram file_id fallback failed for code=%s media_index=%s chat_id=%s", code, i, chat_id)
-        if not delivered:
-            if has_b2:
-                reason = f"B2 tidak dapat diakses: {str(b2_error or 'unduhan gagal')[:180]}; Telegram file_id bot lama/tidak valid: {str(telegram_error or 'tidak tersedia')[:140]}"
-            else:
-                reason = f"File tidak tersimpan di B2; Telegram file_id bot lama/tidak valid: {str(telegram_error or 'tidak tersedia')[:180]}"
-            missing.append({'index': i, 'reason': reason})
-            try:
-                await bot.send_message(
-                    chat_id,
-                    f"⚠️ <b>Media {i}/{total} tidak tersedia</b>\n"
-                    "Media ini dilewati. Bot sedang melanjutkan ke media berikutnya.",
-                    parse_mode="HTML",
-                )
-            except Exception:
-                pass
-
-        if delivered:
-            sent += 1
-            try:
-                mid=int(getattr(last_msg,'message_id',0) or 0)
-                if mid:
-                    if permanent and not auto_delete:
-                        await (await get_pool()).execute("""
-                            INSERT INTO delivery_messages(user_id,chat_id,message_id,code,expires_at)
-                            VALUES($1,$2,$3,$4,NOW()+INTERVAL '100 years')
-                            ON CONFLICT(chat_id,message_id) DO NOTHING
-                        """,chat_id,chat_id,mid,code)
-                    elif permanent and auto_delete:
-                        await (await get_pool()).execute("""
-                            INSERT INTO delivery_messages(user_id,chat_id,message_id,code,expires_at)
-                            VALUES($1,$2,$3,$4,NOW()+INTERVAL '24 hours')
-                            ON CONFLICT(chat_id,message_id) DO NOTHING
-                        """,chat_id,chat_id,mid,code)
-                    else:
-                        exp = access_expires_at
-                        if exp is None:
-                            exp = await (await get_pool()).fetchval("""
-                                SELECT expires_at FROM unlock_transactions
-                                WHERE user_id=$1 AND code=$2 AND expires_at>NOW()
-                                ORDER BY expires_at DESC LIMIT 1
-                            """,chat_id,code)
-                        if exp is not None:
-                            if auto_delete:
-                                exp = min(exp, datetime.now(timezone.utc) + timedelta(hours=24))
-                            await (await get_pool()).execute("""
-                                INSERT INTO delivery_messages(user_id,chat_id,message_id,code,expires_at)
-                                VALUES($1,$2,$3,$4,$5)
-                                ON CONFLICT(chat_id,message_id) DO NOTHING
-                            """,chat_id,chat_id,mid,code,exp)
-            except Exception:
-                pass
-
-        if i < start + len(chunk):
-            await asyncio.sleep(delay_ms / 1000)
-
-    if missing:
-        try:
-            await bot.send_message(
-                chat_id,
-                f"📊 <b>Pengiriman selesai</b>\nBerhasil: <b>{sent}</b>/{len(chunk)}\n"
-                f"Tidak tersedia: <b>{len(missing)}</b> media. Media lainnya tetap dikirim.",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-    return sent, missing
-
-async def delivery_kb(code, page, total, done=False, lang='id'):
-    pages = max(1, (int(total) + 9) // 10)
-    rows = []
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton(text='⬅️ Prev', callback_data=f'page:{code}:{page-1}'))
-    if page + 1 < pages:
-        nav.append(InlineKeyboardButton(text='Next ➡️', callback_data=f'page:{code}:{page+1}'))
-    if nav: rows.append(nav)
-    # Completed pages ✅, current page ❇️, upcoming pages ❎.
-    page_buttons = []
-    for n in range(pages):
-        mark = '❇️' if n == page else ('✅' if n < page else '❎')
-        page_buttons.append(InlineKeyboardButton(text=f'{n+1}{mark}', callback_data=f'page:{code}:{n}'))
-    for offset in range(0, len(page_buttons), 5):
-        rows.append(page_buttons[offset:offset+5])
-    rows.append([
-        InlineKeyboardButton(text='👍 Like', callback_data=f'react:like:{code}'),
-        InlineKeyboardButton(text='👎 No Hate', callback_data=f'react:hate:{code}'),
-        InlineKeyboardButton(text='⭐ Favorit', callback_data=f'react:favorite:{code}')
-    ])
-    rows.append([InlineKeyboardButton(text='🎁 Donasi ⭐', callback_data='vipdonate')])
-    rows.append([InlineKeyboardButton(text='❌ Batal', callback_data=f'cancelget:{code}')])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-async def _access_expiry(uid, code):
-    return await (await get_pool()).fetchval("""
-        SELECT expires_at FROM unlock_transactions
-        WHERE user_id=$1 AND code=$2 AND expires_at>NOW()
-        ORDER BY expires_at DESC LIMIT 1
-    """,uid,code)
-
-async def deliver_page(c,code,page,permanent=False,access_expires_at=None):
-    if c.message.chat.type != "private":
-        await c.answer("Buka chat pribadi dengan bot untuk menerima media.", show_alert=True)
+        logger.warning(
+            "CALLBACK ANSWER BAD REQUEST | %s",
+            exc,
+        )
         return False
-    f=await get_file(code)
-    if not f:
-        await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
-        return False
-    try:
-        raw_media = f['media']
-        media = raw_media if isinstance(raw_media, list) else json.loads(raw_media or '[]')
-        if not isinstance(media, list):
-            raise ValueError('media bukan array')
-        media = [x for x in media if isinstance(x, dict)]
-    except Exception as exc:
-        await c.answer(_L(await _lang(c.from_user.id),'media_corrupt',err=str(exc)[:120]), show_alert=True)
-        return False
-    total=len(media)
-    if page*10 >= total:
-        await c.answer(_L(await _lang(c.from_user.id),'all_sent'),show_alert=True)
-        return True
-    lang = await _lang(c.from_user.id)
-    progress = await c.message.answer(
-        f"⏳ <b>Mengirim media halaman {page+1}...</b>\n"
-        "Media diproses satu per satu. Jika ada yang tidak tersedia, bot akan melewatinya.",
-        parse_mode="HTML",
-    )
-    sent,_=await send_page(
-        c.bot,c.from_user.id,code,media,page,
-        access_expires_at=access_expires_at,permanent=permanent
-    )
-    done=(page+1)*10 >= total
-    text=(_L(lang,'sent',sent=sent) if not done else _L(lang,'done',total=total))
-    try:
-        await progress.edit_text(text,parse_mode='HTML',
-            reply_markup=await delivery_kb(code,page,total,done=done,lang=lang))
+
     except Exception:
-        await c.message.answer(text,parse_mode='HTML',
-            reply_markup=await delivery_kb(code,page,total,done=done,lang=lang))
+        logger.exception(
+            "CALLBACK ANSWER ERROR"
+        )
+        return False
+
     return True
 
-@router.callback_query(F.data.startswith('continue:'))
-async def continue_delivery(c):
-    lang = await _lang(c.from_user.id)
-    await loading(c)
-    _,code,pg=c.data.split(':',2)
-    f=await get_file(code)
-    if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
-    permanent=int(f['owner_id'])==int(c.from_user.id)
-    exp=None if permanent else await _access_expiry(c.from_user.id,code)
-    if not permanent and exp is None:
-        return await c.answer(_L(lang,'expired'),show_alert=True)
-    await c.answer()
-    await deliver_page(c,code,int(pg),permanent=permanent,access_expires_at=exp)
 
-@router.callback_query(F.data.startswith('cancelget:'))
-async def cancel_delivery(c):
-    await c.answer(_L(await _lang(c.from_user.id),'stopped'))
-    try: await c.message.edit_text(_L(await _lang(c.from_user.id),'cancelled'))
-    except Exception:
-        try: await c.message.edit_reply_markup(reply_markup=None)
-        except Exception: pass
+# ============================================================
+# JSON
+# ============================================================
 
-@router.callback_query(F.data.startswith('openvip:'))
-async def openvip(c):
-    # A CallbackQuery must be acknowledged quickly. DB/payment/unlock work can
-    # take several seconds, so acknowledge it before any awaited work.
-    try:
-        await c.answer()
-    except Exception:
-        pass
-    lang = await _lang(c.from_user.id)
-    code=c.data.split(':',1)[1]
-    f=await get_file(code)
-    if not f:
-        return await c.message.answer(_L(await _lang(c.from_user.id),'not_found'))
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
-    from utils.economy import vip_allowed, vip_cooldown_remaining
-    if not await vip_allowed(c.from_user.id, code):
-        remaining = await vip_cooldown_remaining(c.from_user.id, code)
-        return await c.message.answer(
-            f"⏳ <b>Jeda buka code masih aktif.</b>\\nCoba lagi sekitar {remaining} menit lagi.",
-            parse_mode="HTML",
-        )
-    ok,_,reason,_=await unlock(c.from_user.id,code,int(f['media_count']),'vip')
-    if not ok:
-        if reason=='vip_quota':
-            p=await get_pool()
-            user_vip=await p.fetchrow("SELECT vip_plan_days,vip_tier FROM users WHERE user_id=$1",c.from_user.id)
-            days=int(user_vip["vip_plan_days"] or 1) if user_vip else 1
-            tier=str(user_vip["vip_tier"] or "vip") if user_vip else "vip"
-            label="VVIP Bot" if tier=="vvip" else "VIP Bot"
-            cb=f"vipcat:{tier}"
-            return await c.message.answer(
-                f"⚠️ <b>Kuota buka CODE VIP hari ini sudah habis.</b>\n\n💎 Paket kamu: <b>{html.escape(label)}</b>",
-                parse_mode='HTML',
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text=f'💎 Perpanjang {label}',callback_data=cb)],
-                    [InlineKeyboardButton(text=_L(lang,'back'),callback_data='home')]
-                ])
+def safe_json(data):
+    """
+    Mengubah media JSON menjadi object Python.
+    """
+
+    if isinstance(data, str):
+
+        try:
+            return json.loads(data)
+
+        except (json.JSONDecodeError, TypeError, ValueError):
+            logger.warning(
+                "INVALID MEDIA JSON"
             )
-        return await c.message.answer(_L(lang,'cannot_open'))
-    from utils.group_notify import notify_code_opened
-    await notify_code_opened(c.bot, code, c.from_user.id, c.from_user.username, c.from_user.full_name)
-    exp=await _access_expiry(c.from_user.id,code)
-    await deliver_page(c,code,0,permanent=False,access_expires_at=exp)
+            return []
 
-@router.callback_query(F.data.startswith('openown:'))
-async def openown(c):
-    lang = await _lang(c.from_user.id)
-    code=c.data.split(':',1)[1]
-    f=await get_file(code)
-    if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
-    if int(f['owner_id']) != int(c.from_user.id):
-        return await c.answer(_L(lang,'not_owner'),show_alert=True)
-    await c.answer(_L(await _lang(c.from_user.id),'own_success'))
-    from utils.group_notify import notify_code_opened
-    await notify_code_opened(c.bot, code, c.from_user.id, c.from_user.username, c.from_user.full_name)
-    await deliver_page(c,code,0,permanent=True,access_expires_at=None)
-
-
-@router.callback_query(F.data.startswith('openfree:'))
-async def openfree(c):
-    code=c.data.split(':',1)[1]
-    f=await get_file(code)
-    if not f:
-        return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
-    if int(f['owner_id'])==int(c.from_user.id):
-        return await c.answer('Gunakan tombol buka code milik sendiri.',show_alert=True)
-    # Every free-code opening path must enforce the same 5-new-user referral task.
-    if int(f['price_idr'] or 0) <= 0 and str(f['access_mode'] or 'all').lower() != 'vip':
-        from utils.admin_access import admin_access
-        is_admin_user = await admin_access(c.from_user.id)
-        if not is_admin_user:
-            from utils.free_referral import free_code_referral_progress
-            referral_count, _ = await free_code_referral_progress(c.from_user.id, code)
-            if referral_count < 5:
-                return await c.answer(
-                    f'🔒 Free Code terkunci. Undang 5 pengguna baru yang belum pernah menekan Start. Progress: {referral_count}/5. Buka menu 🎁 Ambil Code Free untuk mendapatkan link undangan.',
-                    show_alert=True,
-                )
-    access_mode=str(f['access_mode'] or 'all').lower()
-    if access_mode=='vip' and not await is_vip(c.from_user.id):
-        return await c.answer('Code ini khusus member VIP.',show_alert=True)
-    if int(f['price_idr'] or 0)>0 and access_mode!='free':
-        return await c.answer('Code ini tidak gratis.',show_alert=True)
-    p=await get_pool()
-    await p.execute("""INSERT INTO unlock_transactions(user_id,code,payment_type,amount,expires_at)
-        VALUES($1,$2,'admin',0,NOW()+INTERVAL '24 hours')""",c.from_user.id,code)
-    await c.answer('Membuka media…')
-    from utils.group_notify import notify_code_opened
-    await notify_code_opened(c.bot,code,c.from_user.id,c.from_user.username,c.from_user.full_name)
-    await deliver_page(c,code,0,permanent=False,access_expires_at=await _access_expiry(c.from_user.id,code))
-
-
-@router.callback_query(F.data == 'dismissnotice')
-async def dismiss_payment_notice(c):
-    """Remove the temporary payment notice when the user dismisses it."""
-    try:
-        await c.answer()
-    except Exception:
-        pass
-    if c.message:
-        try:
-            await c.message.delete()
         except Exception:
-            try:
-                await c.message.edit_reply_markup(reply_markup=None)
-            except Exception:
-                pass
+            logger.exception(
+                "MEDIA JSON PARSE ERROR"
+            )
+            return []
+
+    return data or []
 
 
-@router.callback_query(F.data.startswith('openpaid:'))
-async def openpaid(c):
-    code=c.data.split(':',1)[1]; f=await get_file(code)
-    if not f:return await c.answer('Code tidak ditemukan.',show_alert=True)
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
-    if not await has_permanent_or_paid_unlock(c.from_user.id,code):
-        return await c.answer(_L(await _lang(c.from_user.id),'expired'),show_alert=True)
-    await c.answer(_L(await _lang(c.from_user.id),'success_open'))
-    from utils.group_notify import notify_code_opened
-    await notify_code_opened(c.bot, code, c.from_user.id, c.from_user.username, c.from_user.full_name)
-    await deliver_page(c,code,0,permanent=False)
-    # Once Open Media has been used, remove the payment notification itself.
-    if c.message:
+# ============================================================
+# CODE NORMALIZER
+# ============================================================
+
+CODE_REGEX = re.compile(
+    rf"(?<![A-Za-z0-9]){re.escape(CODE_PREFIX)}[A-Za-z0-9]{{{CODE_SUFFIX_LENGTH}}}(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def normalize_code(code: str) -> str:
+    """
+    Normalisasi code agar pencarian konsisten.
+    """
+
+    if not code:
+        return ""
+
+    return (
+        str(code)
+        .strip()
+        .replace(" ", "")
+        .replace("\n", "")
+        .replace("\r", "")
+    )
+
+
+# ============================================================
+# SAFE MESSAGE UPDATE
+# ============================================================
+
+async def safe_update(
+    bot,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup=None,
+):
+    """
+    Edit message dengan rate limit sederhana.
+    """
+
+    now = time.time()
+
+    previous = _last_update.get(chat_id)
+
+    if (
+        previous is not None
+        and now - previous < UPDATE_DELAY
+    ):
+        return False
+
+    _last_update[chat_id] = now
+
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+
+        return True
+
+    except TelegramBadRequest as exc:
+
+        # Message tidak berubah / message sudah tidak ada
+        # tidak boleh membuat bot crash.
+        logger.debug(
+            "GETFILE MESSAGE UPDATE IGNORED | %s",
+            exc,
+        )
+
+        return False
+
+    except Exception:
+        logger.exception(
+            "GETFILE UPDATE ERROR"
+        )
+
+        return False
+
+
+# ============================================================
+# BUTTON GET FILE
+# ============================================================
+
+@router.callback_query(
+    F.data == "getfile"
+)
+async def getfile_start(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+    """
+    Membuka mode Get File.
+
+    PENTING:
+    Callback langsung di-answer sebelum database/FSM/message
+    processing supaya tidak terkena timeout Telegram.
+    """
+
+    # ========================================================
+    # ACK CALLBACK SECEPAT MUNGKIN
+    # ========================================================
+
+    await safe_callback_answer(call)
+
+    user_id = int(call.from_user.id)
+
+    async with user_lock(user_id):
+
+        # ====================================================
+        # FSM
+        # ====================================================
+
+        await state.clear()
+
+        await state.set_state(
+            GetFileState.waiting_code
+        )
+
+        # ====================================================
+        # TEXT
+        # ====================================================
+
+        lang = await get_user_language(user_id)
+        text = translate(lang, "send_code").replace("*", "<b>", 1).replace("*", "</b>", 1)
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🏠 Home",
+                        callback_data="home",
+                    )
+                ]
+            ]
+        )
+
+        # ====================================================
+        # MESSAGE
+        # ====================================================
+
+        progress_id = None
+
         try:
-            await c.message.delete()
+
+            await call.message.edit_text(
+                text=text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+
+            progress_id = call.message.message_id
+
+        except TelegramBadRequest:
+
+            try:
+
+                msg = await call.message.answer(
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+
+                progress_id = msg.message_id
+
+            except Exception:
+                logger.exception(
+                    "GETFILE START SEND MESSAGE ERROR"
+                )
+
+        except Exception:
+            logger.exception(
+                "GETFILE START EDIT ERROR"
+            )
+
+        # ====================================================
+        # SAVE FSM DATA
+        # ====================================================
+
+        if progress_id:
+
+            await state.update_data(
+                getfile_mode=True,
+                progress_msg_id=progress_id,
+            )
+
+
+# ============================================================
+# OPEN FILE
+# ============================================================
+
+async def open_file_by_code(
+    message: Message,
+    code: str,
+    state: FSMContext,
+    paid_override: bool = False,
+    user_id: int | None = None,
+):
+    """
+    Membuka file berdasarkan code.
+    """
+
+    code = normalize_code(code)
+    opener_id = int(user_id if user_id is not None else message.from_user.id)
+
+    if not code:
+        await state.clear()
+
+        lang = await get_user_language(opener_id)
+        return await message.answer({"id":"❌ CODE tidak valid.","en":"❌ Invalid code.","zh":"❌ 代码无效。"}.get(lang,"❌ CODE tidak valid."))
+
+    pool = await get_pool()
+
+    # ========================================================
+    # DATABASE FILE
+    # ========================================================
+
+    file = await pool.fetchrow(
+        """
+        SELECT
+            code,
+            title,
+            media,
+            owner_id,
+            expires_at,
+            is_paid,
+            price,
+            views
+        FROM files
+        WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))
+        LIMIT 1
+        """,
+        code,
+    )
+
+    # ========================================================
+    # FILE TIDAK DITEMUKAN
+    # ========================================================
+
+    if not file:
+
+        await state.clear()
+
+        lang = await get_user_language(opener_id)
+        return await message.answer(translate(lang, "code_not_found").replace("*", "", 2))
+
+    # ========================================================
+    # MEDIA
+    # ========================================================
+
+    media = safe_json(
+        file["media"]
+    )
+
+    if not isinstance(media, list) or not media:
+
+        await state.clear()
+
+        lang = await get_user_language(opener_id)
+        return await message.answer(translate(lang, "file_empty").replace("*", "", 2))
+
+    # ========================================================
+    # EXPIRED
+    # ========================================================
+
+    expires_at = file["expires_at"]
+
+    if expires_at:
+
+        try:
+
+            if expires_at.timestamp() < time.time():
+
+                await state.clear()
+
+                lang = await get_user_language(opener_id)
+                return await message.answer({"id":"❌ File sudah kadaluarsa.","en":"❌ File has expired.","zh":"❌ 文件已过期。"}.get(lang,"❌ File sudah kadaluarsa."))
+
+        except Exception:
+            logger.warning(
+                "INVALID EXPIRES_AT | code=%s",
+                code,
+                exc_info=True,
+            )
+
+    # ========================================================
+    # OWNER
+    # ========================================================
+
+    owner_id = file["owner_id"]
+
+    owner = False
+
+    try:
+
+        owner = (
+            int(opener_id)
+            == int(owner_id)
+        )
+
+    except (ValueError, TypeError):
+
+        owner = False
+
+    # ========================================================
+    # PAYMENT
+    # ========================================================
+
+    is_paid = bool(
+        file["is_paid"]
+    )
+
+    price = file["price"] or 0
+
+    try:
+        price = int(price)
+
+    except (ValueError, TypeError):
+        price = 0
+
+    # ========================================================
+    # USER STATUS
+    # ========================================================
+
+    try:
+
+        user_level = await get_user_status(
+            pool,
+            opener_id,
+        )
+
+    except Exception:
+
+        logger.exception(
+            "GET USER STATUS ERROR | user=%s",
+            opener_id,
+        )
+
+        user_level = None
+
+    # ========================================================
+    # CREATOR ACCESS
+    # ========================================================
+
+    creator_access = False
+
+    try:
+
+        creator_access = await pool.fetchval(
+            """
+            SELECT
+                COALESCE(is_creator, FALSE)
+                AND COALESCE(
+                    creator_status,
+                    'none'
+                ) = 'approved'
+            FROM users
+            WHERE chat_id = $1
+            LIMIT 1
+            """,
+            opener_id,
+        ) or False
+
+    except Exception:
+
+        logger.exception(
+            "CREATOR ACCESS CHECK ERROR | user=%s",
+            opener_id,
+        )
+
+        creator_access = False
+
+    # ========================================================
+    # PURCHASE
+    # ========================================================
+
+    access = False
+
+    try:
+
+        access = await pool.fetchval(
+            """
+            SELECT EXISTS(
+                SELECT 1
+                FROM file_purchases
+                WHERE user_id = $1
+                  AND (
+                      LOWER(TRIM(COALESCE(file_code, ''))) = LOWER(TRIM($2))
+                      OR LOWER(TRIM(COALESCE(code, ''))) = LOWER(TRIM($2))
+                  )
+                  AND status = 'paid'
+            )
+            """,
+            opener_id,
+            code,
+        )
+
+    except Exception:
+
+        logger.exception(
+            "PURCHASE ACCESS CHECK ERROR | "
+            "user=%s | code=%s",
+            opener_id,
+            code,
+        )
+
+        access = False
+
+    # ========================================================
+    # FINAL ACCESS
+    # ========================================================
+
+    # Single access policy: paid files are never bypassed by VIP/VVIP/Creator.
+    has_access = owner or bool(access)
+
+    # ========================================================
+    # VIEW COUNT
+    # ========================================================
+
+    if not is_paid or has_access:
+
+        try:
+
+            viewed = await pool.fetchrow(
+                """
+                INSERT INTO file_views
+                (
+                    user_id,
+                    file_code
+                )
+                VALUES
+                (
+                    $1,
+                    $2
+                )
+                ON CONFLICT
+                (
+                    user_id,
+                    file_code
+                )
+                DO NOTHING
+                RETURNING user_id
+                """,
+                opener_id,
+                file["code"],
+            )
+
+            if viewed:
+
+                await pool.execute(
+                    """
+                    UPDATE files
+                    SET
+                        views =
+                            COALESCE(views, 0) + 1,
+                        view_count =
+                            COALESCE(view_count, 0) + 1
+                    WHERE code = $1
+                    """,
+                    file["code"],
+                )
+
+        except Exception:
+
+            # Statistik gagal tidak boleh membuat
+            # user kehilangan akses ke file.
+            logger.exception(
+                "FILE VIEW UPDATE ERROR | code=%s",
+                file["code"],
+            )
+
+    # ========================================================
+    # CLEAR FSM
+    # ========================================================
+
+    await state.clear()
+
+    # ========================================================
+    # CANONICAL ACCESS / POINT GATE
+    # ========================================================
+    lang = await get_user_language(opener_id)
+    from utils.media_access import can_open_media, reward_owner_for_open
+    access_file = dict(file)
+    access_file["media_count"] = len(media)
+    allowed, reason = await can_open_media(opener_id, access_file, paid_override=paid_override)
+
+    if not allowed:
+        if reason == "payment_required":
+            from handlers.pay import paid_unlock_keyboard
+            txt = {
+                "id": f"🔒 <b>FILE BERBAYAR</b>\n\n🔑 CODE: <code>{file['code']}</code>\n💰 Harga: <b>Rp {int(price):,}</b>\n📦 Media: <b>{len(media)}</b>\n\nPilih cara membuka file:",
+                "en": f"🔒 <b>PAID FILE</b>\n\n🔑 CODE: <code>{file['code']}</code>\n💰 Price: <b>Rp {int(price):,}</b>\n📦 Media: <b>{len(media)}</b>\n\nChoose how to unlock this file:",
+                "zh": f"🔒 <b>付费文件</b>\n\n🔑 代码：<code>{file['code']}</code>\n💰 价格：<b>Rp {int(price):,}</b>\n📦 媒体：<b>{len(media)}</b>\n\n请选择解锁方式：",
+            }
+            return await message.answer(txt.get(lang, txt["id"]), parse_mode="HTML", reply_markup=paid_unlock_keyboard(file["code"], lang))
+        from utils.points import get_points, fmt_points
+        points = await get_points(pool, opener_id)
+        required = len(media)
+        txt = {
+            "id": f"⭐ <b>POIN TIDAK CUKUP</b>\n\nCode ini berisi <b>{required} media</b> dan membutuhkan <b>{required} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.",
+            "en": f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis code contains <b>{required} media</b> and requires <b>{required} points</b>.\nYour points: <b>{fmt_points(points)}</b>.",
+            "zh": f"⭐ <b>积分不足</b>\n\n此代码包含 <b>{required} 个媒体</b>，需要 <b>{required} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。",
+        }
+        kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={"id":"⭐ Cek Poin","en":"⭐ Points","zh":"⭐ 积分"}.get(lang,"⭐ Cek Poin"),callback_data="points")]])
+        return await message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=kb)
+
+    # A successful non-owner open is recorded once and rewards the owner.
+    if reason != "owner":
+        await reward_owner_for_open(opener_id, access_file)
+
+    # ========================================================
+    # OPEN FILE
+    # ========================================================
+
+    try:
+
+        from handlers.open_menu import open_keyboard
+
+    except Exception:
+
+        logger.exception(
+            "OPEN MENU IMPORT ERROR"
+        )
+
+        return await message.answer(
+            "❌ Menu file sedang mengalami masalah."
+        )
+
+    title = str(
+        file["title"] or "Tanpa Judul"
+    )
+
+    lang = await get_user_language(opener_id)
+    found_text = {
+        "id": f"✅ <b>FILE DITEMUKAN</b>\n\n📝 Judul: <b>{title}</b>\n📦 Total Media: <b>{len(media)}</b>\n\nPilih metode pengiriman:",
+        "en": f"✅ <b>FILE FOUND</b>\n\n📝 Title: <b>{title}</b>\n📦 Total Media: <b>{len(media)}</b>\n\nChoose a delivery method:",
+        "zh": f"✅ <b>找到文件</b>\n\n📝 标题：<b>{title}</b>\n📦 媒体总数：<b>{len(media)}</b>\n\n请选择发送方式：",
+    }
+    return await message.answer(found_text.get(lang, found_text["id"]), parse_mode="HTML", reply_markup=open_keyboard(code, lang))
+
+
+# ============================================================
+@router.callback_query(F.data.startswith("paidpoint:"))
+async def paid_point_unlock(call: CallbackQuery):
+    code=normalize_code(call.data.split(":",1)[1])
+    pool=await get_pool()
+    file=await pool.fetchrow("SELECT * FROM files WHERE LOWER(TRIM(code))=LOWER(TRIM($1)) LIMIT 1",code)
+    if not file: return await call.answer("❌ Code tidak ditemukan.", show_alert=True)
+    if not bool(file.get("is_paid")): return await call.answer("❌ Code ini gratis.", show_alert=True)
+    user_id=int(call.from_user.id)
+    if int(file.get("owner_id") or 0)==user_id: return await call.answer("✅ Kamu adalah pemilik file.", show_alert=False)
+    paid=bool(await pool.fetchval("SELECT EXISTS(SELECT 1 FROM file_purchases WHERE user_id=$1 AND (LOWER(TRIM(COALESCE(file_code,'')))=LOWER(TRIM($2)) OR LOWER(TRIM(COALESCE(code,'')))=LOWER(TRIM($2))) AND status='paid')",user_id,file["code"]))
+    if paid: return await call.answer("✅ File sudah dibuka.", show_alert=False)
+    from utils.points import unlock_paid_code, fmt_points
+    price=int(file.get("price") or 0); ok,balance=await unlock_paid_code(pool,user_id,file["code"],price)
+    lang=await get_user_language(user_id)
+    if not ok:
+        text={"id":f"⭐ <b>POIN TIDAK CUKUP</b>\n\nDibutuhkan: <b>{fmt_points(price)} poin</b>\nPoin kamu: <b>{fmt_points(balance)}</b>","en":f"⭐ <b>NOT ENOUGH POINTS</b>\n\nRequired: <b>{fmt_points(price)} points</b>\nYour points: <b>{fmt_points(balance)}</b>","zh":f"⭐ <b>积分不足</b>\n\n需要：<b>{fmt_points(price)} 积分</b>\n你的积分：<b>{fmt_points(balance)}</b>"}
+        kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={"id":"⭐ Buy Poin","en":"⭐ Buy Points","zh":"⭐ 购买积分"}.get(lang,"⭐ Buy Poin"),callback_data="points")],[InlineKeyboardButton(text={"id":"💳 Bayar","en":"💳 Pay","zh":"💳 支付"}.get(lang,"💳 Bayar"),callback_data=f"pay:{file['code']}")]])
+        return await call.message.answer(text.get(lang,text["id"]),parse_mode="HTML",reply_markup=kb)
+    await call.answer("✅ Unlock berhasil!", show_alert=False)
+    from handlers.open_menu import open_keyboard
+    title=str(file.get("title") or "Tanpa Judul")
+    try:
+        media=file.get("media"); media=json.loads(media) if isinstance(media,str) else media; count=len(media or [])
+    except Exception: count=int(file.get("media_count") or 0)
+    txt={"id":f"✅ <b>FILE DITEMUKAN</b>\n\n📝 Judul: <b>{title}</b>\n📦 Total Media: <b>{count}</b>\n\nPilih metode pengiriman:","en":f"✅ <b>FILE FOUND</b>\n\n📝 Title: <b>{title}</b>\n📦 Total Media: <b>{count}</b>\n\nChoose a delivery method:","zh":f"✅ <b>找到文件</b>\n\n📝 标题：<b>{title}</b>\n📦 媒体总数：<b>{count}</b>\n\n请选择发送方式："}
+    return await call.message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=open_keyboard(file["code"],lang))
+
+# PROCESS CODE
+# ============================================================
+
+async def process_code(
+    message: Message,
+    code: str,
+    paid_override: bool = False,
+    user_id: int | None = None,
+):
+    """
+    Compatibility helper untuk pemanggilan dari handler lain.
+    """
+
+    code = normalize_code(code)
+    if user_id is None:
+        user_id = int(message.from_user.id)
+
+    class DummyState:
+
+        async def clear(self):
+            return None
+
+        async def get_data(self):
+            return {}
+
+        async def update_data(self, **kwargs):
+            return None
+
+    return await open_file_by_code(
+        message=message,
+        code=code,
+        state=DummyState(),
+        paid_override=paid_override,
+        user_id=user_id,
+    )
+
+
+# ============================================================
+# GLOBAL CODE ENTRY
+# ============================================================
+# A CODE can arrive from anywhere in the chat, not only after pressing
+# Get File. It always enters the same process_code() pipeline.
+@router.message(
+    F.text.regexp(CODE_REGEX)
+    | F.text.regexp(
+        re.compile(
+            r"(?<![A-Za-z0-9])Jsshowbot_[A-Za-z0-9]{14}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+    )
+)
+async def receive_code_global(
+    message: Message,
+    state: FSMContext,
+):
+    """
+    Direct CODE entry.
+
+    A CODE typed/sent directly in chat must behave exactly like
+    entering the CODE through the Get File menu.  It must NOT enter
+    the Open Page/Open All loading flow and must never show
+    "Mencari Media Code..." merely because the CODE was sent directly.
+
+    We accept the configured Pastelebot_ format and the legacy
+    Jsshowbot_ format so existing shared codes are handled too.
+    """
+    text = (message.text or "").strip()
+    if not text:
+        return
+
+    patterns = [
+        CODE_REGEX,
+        re.compile(
+            r"(?<![A-Za-z0-9])Jsshowbot_[A-Za-z0-9]{14}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ]
+
+    match = None
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            break
+
+    if not match:
+        return
+
+    code = normalize_code(match.group())
+
+    user_id = int(message.from_user.id)
+    async with user_lock(user_id):
+        try:
+            await message.delete()
         except Exception:
             pass
 
-@router.callback_query(F.data.startswith('mediadiscount:'))
-async def media_discount_list(c):
-    code=c.data.split(':',1)[1]
-    f=await get_file(code)
-    if not f: return await c.answer('Code media tidak ditemukan.',show_alert=True)
-    original=int(f['price_idr'] or 0)
-    if original < 7000: return await c.answer('Code discount hanya berlaku untuk harga Rp7.000 ke atas.',show_alert=True)
-    p=await get_pool()
-    rows=await p.fetch("""SELECT dc.* FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
-      WHERE ud.user_id=$1 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses
-      AND dc.min_price<=$2 AND dc.tier='all' AND (cardinality(dc.package_codes)=0 OR 'media'=ANY(dc.package_codes) OR '*'=ANY(dc.package_codes))
-      ORDER BY dc.expires_at""",c.from_user.id,original)
-    if not rows:
-        return await c.answer('Tidak ada code discount yang cocok untuk Code Media ini.',show_alert=True)
-    buttons=[]
-    for d in rows:
-        off=original*int(d['discount_value'])//100 if d['discount_type']=='percent' else int(d['discount_value'])
-        final=max(1000,original-min(original-1000,off))
-        buttons.append([InlineKeyboardButton(text=f"🎟 {d['code']} • Rp{final:,}".replace(',','.'),callback_data=f"mediadiscapply:{code}:{d['id']}")])
-    buttons.append([InlineKeyboardButton(text='🔙 Kembali',callback_data=f'getcode:{code}')])
-    await c.message.answer(f"🎟 Code Media: {code}\nHarga normal: Rp{original:,}\nPilih code discount:".replace(',','.'),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await c.answer()
+        try:
+            await state.clear()
+        except Exception:
+            pass
 
-@router.callback_query(F.data.startswith('mediadiscapply:'))
-async def media_discount_apply(c):
-    _,code,discount_id=c.data.split(':',2)
-    f=await get_file(code)
-    if not f: return await c.answer('Code media tidak ditemukan.',show_alert=True)
-    original=int(f['price_idr'] or 0)
-    p=await get_pool()
-    d=await p.fetchrow("""SELECT dc.* FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
-      WHERE dc.id=$1 AND ud.user_id=$2 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses
-      AND dc.min_price<=$3 AND dc.tier='all' AND (cardinality(dc.package_codes)=0 OR 'media'=ANY(dc.package_codes) OR '*'=ANY(dc.package_codes))""",int(discount_id),c.from_user.id,original)
-    if not d or original<7000: return await c.answer('Code discount tidak valid atau tidak berlaku untuk media ini.',show_alert=True)
-    off=original*int(d['discount_value'])//100 if d['discount_type']=='percent' else int(d['discount_value'])
-    final=max(1000,original-min(original-1000,off))
-    buttons=[]
-    for provider,label in [('bayargg','QR 2'),('cashi','QR 1'),('manual','🧾 QR Manual')]:
-        if await enabled(provider): buttons.append([InlineKeyboardButton(text=label,callback_data=f'payfile:{provider}:{code}:{d["id"]}')])
-    if not buttons: return await c.answer('Metode pembayaran belum tersedia.',show_alert=True)
-    await c.message.answer(f"🎟 Code Discount: {d['code']}\nHarga awal: Rp{original:,}\nPotongan: Rp{original-final:,}\n💰 Total bayar: Rp{final:,}".replace(',','.'),reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    await c.answer()
+        # EXACTLY the same canonical Get File pipeline used by the
+        # Get File -> enter CODE flow.
+        return await process_code(message, code)
 
-@router.callback_query(F.data.startswith('payfile:'))
-async def payfile(c,state):
-    lang = await _lang(c.from_user.id)
-    parts=c.data.split(':',3)
-    if len(parts)<3: return await c.answer('Permintaan pembayaran tidak valid.',show_alert=True)
-    _,requested,code=parts[:3]
-    discount_id=int(parts[3]) if len(parts)>3 and parts[3].isdigit() else None
-    f=await get_file(code)
-    if not f:return await c.answer('Code tidak ditemukan.',show_alert=True)
-    code=str(f['code'])
-    # Never ask a user to pay for the same code again while their paid access is active.
-    if await has_permanent_or_paid_unlock(c.from_user.id, code):
-        return await c.answer('✅ Code ini sudah kamu beli. Buka code dari menu sebelumnya; tidak perlu membayar lagi.' if lang == 'id' else '✅ You already purchased this code. Open it from the previous menu; no need to pay again.', show_alert=True)
-    # Avoid creating a second invoice while a manual proof for this code is still pending.
-    pending = await (await get_pool()).fetchval("""SELECT 1 FROM manual_payments
-        WHERE user_id=$1 AND target_code=$2 AND target_type='file' AND status='pending' LIMIT 1""", c.from_user.id, code)
-    if pending:
-        return await c.answer('🧾 Pembayaran untuk code ini masih menunggu proses. Kirim bukti atau tunggu admin memeriksa.' if lang == 'id' else '🧾 Payment for this code is already pending. Submit proof or wait for admin review.', show_alert=True)
-    original_amount=int(f['price_idr'] or 0)
-    amount=original_amount
-    discount_row=None
-    if discount_id:
-        if original_amount < 7000:
-            return await c.answer('Code discount hanya berlaku untuk harga Rp7.000 ke atas.',show_alert=True)
-        discount_row=await (await get_pool()).fetchrow("""SELECT dc.* FROM discount_codes dc JOIN user_discount_codes ud ON ud.discount_id=dc.id
-          WHERE dc.id=$1 AND ud.user_id=$2 AND dc.active AND dc.starts_at<=NOW() AND dc.expires_at>NOW() AND dc.used_count<dc.max_uses
-          AND dc.min_price<=$3 AND dc.tier='all' AND (cardinality(dc.package_codes)=0 OR 'media'=ANY(dc.package_codes) OR '*'=ANY(dc.package_codes))""",discount_id,c.from_user.id,original_amount)
-        if not discount_row: return await c.answer('Code discount sudah tidak valid atau kuotanya habis.',show_alert=True)
-        off=original_amount*int(discount_row['discount_value'])//100 if discount_row['discount_type']=='percent' else int(discount_row['discount_value'])
-        amount=max(1000,original_amount-min(original_amount-1000,off))
-    if amount<=0:return await c.answer(_L(lang,'free_code'),show_alert=True)
-    requested=str(requested).lower()
-    # QR 1 (BayarGG) has a provider minimum of Rp5.000. Automatically
-    # reroute smaller amounts to Cashi, and if Cashi is unavailable/fails,
-    # fall back to the configured manual QR.
-    provider=requested
-    if requested=='bayargg' and amount<5000:
-        if await enabled('cashi'):
-            provider='cashi'
-        elif await enabled('manual'):
-            provider='manual'
-        else:
-            return await c.answer('Tidak ada metode QR yang mendukung nominal ini.',show_alert=True)
-    if provider=='manual':
-        qr=await (await get_pool()).fetchval("SELECT value FROM settings WHERE key='manual_qr_file_id'")
-        if not qr:return await c.answer('QR manual belum dipasang admin.',show_alert=True)
-        p=await get_pool()
-        row=await p.fetchrow("""INSERT INTO manual_payments(user_id,amount,target_code,target_type,quantity,status)
-          VALUES($1,$2,$3,'file',1,'pending') RETURNING id""",c.from_user.id,amount,code)
-        msg=await c.message.answer_photo(qr,caption=f"QR MANUAL\n\nCode: <code>{html.escape(code)}</code>\nNominal: {fmt(amount)}" + (f"\nCode Discount: {html.escape(str(discount_row['code']))}\nHarga awal: {fmt(original_amount)}" if discount_row else '') + "\n\nSetelah membayar, tekan Cek Pembayaran lalu kirim screenshot bukti.",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'mancheck:{row["id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'mancancel:{row["id"]}')]]))
-        await p.execute("UPDATE manual_payments SET qr_message_id=$1 WHERE id=$2",msg.message_id,row['id'])
-        if discount_row:
-            await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
-            await p.execute("DELETE FROM user_discount_codes WHERE user_id=$1 AND discount_id=$2",c.from_user.id,discount_id)
-        return
-    meta={"code":code}
-    if discount_row: meta.update({"discount_id":discount_id,"discount_code":discount_row['code'],"original_amount":original_amount,"discount_amount":original_amount-amount})
-    r,status=await create_purchase(c.from_user.id,'file',1,amount,provider,c.from_user.full_name,meta)
-    # Automatic failover: requested provider -> other configured provider -> manual QR.
-    if not r:
-        fallback = 'cashi' if provider == 'bayargg' else 'bayargg'
-        if await enabled(fallback) and (fallback != 'bayargg' or amount >= 5000):
-            provider=fallback
-            r,status=await create_purchase(c.from_user.id,'file',1,amount,provider,c.from_user.full_name,meta)
-    if not r and await enabled('manual'):
-        provider='manual'
-        qr=await (await get_pool()).fetchval("SELECT value FROM settings WHERE key='manual_qr_file_id'")
-        if not qr:return await c.answer('Semua metode pembayaran tidak tersedia.',show_alert=True)
-        p=await get_pool(); row=await p.fetchrow("INSERT INTO manual_payments(user_id,amount,target_code,target_type,quantity,status) VALUES($1,$2,$3,'file',1,'pending') RETURNING id",c.from_user.id,amount,code)
-        msg=await c.message.answer_photo(qr,caption=f"QR MANUAL\n\nCode: <code>{html.escape(code)}</code>\nNominal: {fmt(amount)}" + (f"\nCode Discount: {html.escape(str(discount_row['code']))}\nHarga awal: {fmt(original_amount)}" if discount_row else '') + "\n\nSetelah membayar, tekan Cek Pembayaran lalu kirim screenshot bukti.",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'mancheck:{row["id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'mancancel:{row["id"]}')]]))
-        await p.execute("UPDATE manual_payments SET qr_message_id=$1 WHERE id=$2",msg.message_id,row['id'])
-        if discount_row:
-            await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
-            await p.execute("DELETE FROM user_discount_codes WHERE user_id=$1 AND discount_id=$2",c.from_user.id,discount_id)
-        return
-    if not r:return await c.answer('Semua metode pembayaran tidak tersedia untuk nominal ini.',show_alert=True)
-    if discount_row:
-        p=await get_pool()
-        await p.execute("UPDATE discount_codes SET used_count=used_count+1 WHERE id=$1 AND used_count<max_uses",discount_id)
-        await p.execute("DELETE FROM user_discount_codes WHERE user_id=$1 AND discount_id=$2",c.from_user.id,discount_id)
-    data=qr_bytes(r.get('qr_string')); text=f"PAYMENT\n\nCode: <code>{code}</code>\nNominal: {fmt(amount)}" + (f"\nCode Discount: {html.escape(str(discount_row['code']))}\nHarga awal: {fmt(original_amount)}" if discount_row else '') + f"\nProvider: {provider.upper()}\nInvoice: <code>{r['invoice_id']}</code>\n\nSetelah membayar, tekan Cek Pembayaran."
-    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Cek Pembayaran',callback_data=f'paycheck:{r["invoice_id"]}')],[InlineKeyboardButton(text='Batal',callback_data=f'paycancel:{r["invoice_id"]}')]])
-    if data: await c.message.answer_photo(BufferedInputFile(data,filename='payment.png'),caption=text,parse_mode='HTML',reply_markup=kb)
-    else: await c.message.answer(text,parse_mode='HTML',reply_markup=kb)
 
-@router.callback_query(F.data.startswith('page:'))
-async def page(c):
-    lang = await _lang(c.from_user.id)
-    _,code,pg=c.data.split(':',2)
-    await loading(c)
-    f=await get_file(code)
-    if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
-    permanent=int(f['owner_id'])==int(c.from_user.id)
-    exp=None if permanent else await _access_expiry(c.from_user.id,code)
-    if not permanent and exp is None:
-        return await c.answer(_L(lang,'expired'),show_alert=True)
-    await c.answer()
-    await deliver_page(c,code,int(pg),permanent=permanent,access_expires_at=exp)
+# ============================================================
+# RECEIVE CODE
+# ============================================================
 
-@router.callback_query(F.data.startswith('react:'))
-async def react(c):
-    _,reaction,code=c.data.split(':',2); p=await get_pool()
-    f=await get_file(code)
-    if not f:return await c.answer(_L(await _lang(c.from_user.id),'not_found'),show_alert=True)
-    if not await required_join_ok(c.bot,c.from_user.id,f,c.message): return
-    row=await p.fetchrow("SELECT 1 FROM code_reactions WHERE user_id=$1 AND code=$2 AND reaction=$3",c.from_user.id,code,reaction)
-    col={'like':'likes','hate':'hates','favorite':'favorites'}[reaction]
-    if row:
-        await p.execute("DELETE FROM code_reactions WHERE user_id=$1 AND code=$2 AND reaction=$3",c.from_user.id,code,reaction)
-        await p.execute(f"UPDATE files SET {col}=GREATEST({col}-1,0) WHERE code=$1",code)
-    else:
-        await p.execute("INSERT INTO code_reactions(user_id,code,reaction) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",c.from_user.id,code,reaction)
-        await p.execute(f"UPDATE files SET {col}={col}+1 WHERE code=$1",code)
-    s=await p.fetchrow("SELECT likes,hates,favorites,views FROM files WHERE code=$1",code)
-    await c.answer(f"👍 {s['likes']}  👎 {s['hates']}  ⭐ {s['favorites']}")
+@router.callback_query(F.data.startswith("grantopen:"))
+async def grant_open_code(call: CallbackQuery):
+    code = call.data.split(":", 1)[1].strip()
+    await safe_callback_answer(call, "⏳")
+    await process_code(call.message, code)
+
+
+@router.message(
+    StateFilter(
+        GetFileState.waiting_code
+    ),
+    F.text,
+)
+async def receive_code(
+    message: Message,
+    state: FSMContext,
+):
+    """
+    Menerima code dari user.
+    """
+
+    user_id = int(
+        message.from_user.id
+    )
+
+    async with user_lock(user_id):
+
+        text = (
+            message.text or ""
+        ).strip()
+
+        match = CODE_REGEX.search(text)
+        if not match:
+            match = re.search(r"(?<![A-Za-z0-9])Jsshowbot_[A-Za-z0-9]{14}(?![A-Za-z0-9])", text, re.IGNORECASE)
+
+        # ====================================================
+        # INVALID CODE
+        # ====================================================
+
+        if not match:
+
+            try:
+                await message.delete()
+
+            except Exception:
+                pass
+
+            lang = await get_user_language(user_id)
+            invalid = {
+                "id": "❌ Itu bukan CODE bot saya.\n\nSilakan kirim CODE yang benar atau tekan Batal.",
+                "en": "❌ That is not a valid bot code.\n\nSend a valid code or press Cancel.",
+                "zh": "❌ 这不是有效的机器人代码。\n\n请发送正确的代码或点击取消。",
+            }
+            return await message.answer(invalid.get(lang, invalid["id"]))
+
+        # ====================================================
+        # NORMALIZE
+        # ====================================================
+
+        code = normalize_code(
+            match.group()
+        )
+
+        # ====================================================
+        # DELETE USER MESSAGE
+        # ====================================================
+
+        try:
+
+            await message.delete()
+
+        except Exception:
+            pass
+
+        # ====================================================
+        # DELETE PROGRESS MESSAGE
+        # ====================================================
+
+        try:
+
+            data = await state.get_data()
+
+            progress_id = data.get(
+                "progress_msg_id"
+            )
+
+            if progress_id:
+
+                try:
+
+                    await message.bot.delete_message(
+                        chat_id=message.chat.id,
+                        message_id=int(
+                            progress_id
+                        ),
+                    )
+
+                except Exception:
+                    pass
+
+        except Exception:
+
+            logger.exception(
+                "GETFILE PROGRESS DELETE ERROR"
+            )
+
+        # ====================================================
+        # OPEN
+        # ====================================================
+
+        # SINGLE CODE ENTRY POINT:
+        # The FSM only collects the code. The actual lookup/access
+        # logic always goes through process_code(), exactly like
+        # Marketplace, Search, deep-links and successful payments.
+        await state.clear()
+        return await process_code(message, code)
+
+
+# ============================================================
+# CANCEL GET FILE
+# ============================================================
+
+@router.callback_query(
+    F.data == "cancel_getfile"
+)
+async def cancel_getfile(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+    """
+    Membatalkan mode Get File.
+    """
+
+    # ACK SECEPAT MUNGKIN
+    await safe_callback_answer(call)
+
+    user_id = int(
+        call.from_user.id
+    )
+
+    async with user_lock(user_id):
+
+        await state.clear()
+
+        lang = await get_user_language(user_id)
+        text = {"id":"❌ <b>Get File dibatalkan.</b>","en":"❌ <b>Get File cancelled.</b>","zh":"❌ <b>获取文件已取消。</b>"}.get(lang,"❌ <b>Get File dibatalkan.</b>")
+
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text="🏠 Home",
+                        callback_data="home",
+                    )
+                ]
+            ]
+        )
+
+        try:
+
+            await call.message.edit_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+
+        except TelegramBadRequest:
+
+            try:
+
+                await call.message.answer(
+                    text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+
+            except Exception:
+                logger.exception(
+                    "CANCEL GETFILE SEND ERROR"
+                )
+
+        except Exception:
+
+            logger.exception(
+                "CANCEL GETFILE EDIT ERROR"
+            )
+
+
+async def canonical_open_menu(message, code: str, lang: str = "id"):
+    """Single post-access destination for every successful Code lookup."""
+    await message.answer(
+        "📂 <b>OPEN MENU</b>\n\nPilih cara membuka media:"
+        if lang == "id"
+        else (
+            "📂 <b>OPEN MENU</b>\n\nChoose how to open the media."
+            if lang == "en"
+            else "📂 <b>打开菜单</b>\n\n请选择打开媒体的方式。"
+        ),
+        parse_mode="HTML",
+        reply_markup=open_keyboard(code, lang),
+    )

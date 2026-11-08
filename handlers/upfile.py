@@ -1,910 +1,2619 @@
+import asyncio
+import json
+import logging
+import re
+import secrets
+import string
+import time
 
-from __future__ import annotations
-import asyncio,json,os,secrets,tempfile,html,re
-from aiogram import Router,F
-from aiogram.filters import Command
-from aiogram.types import Message,CallbackQuery,InlineKeyboardMarkup,InlineKeyboardButton
+from contextlib import asynccontextmanager
+from html import escape
+from typing import Dict, Optional
+
+from aiogram import Router, F
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter, TelegramServerError, TelegramNetworkError
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup,State
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    InputMediaPhoto,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from config import CHANNEL_ID
 from database import get_pool
-from config import MAX_MEDIA,BOT_USERNAME,PAID_CODE_MIN_IDR,PAID_CODE_MAX_IDR
-from utils.b2_storage import b2_pool
-from utils.callback_loading import loading
-from utils.i18n import get_lang, translate
-from utils.admin_access import admin_access
-router=Router()
-_LOCKS={}
-class U(StatesGroup):
-    media=State(); title=State(); tags=State(); price=State(); server=State(); access=State(); auto_delete=State(); forward=State(); watermark=State(); preview=State()
-    panel_title=State(); panel_tags=State(); panel_price=State(); panel_preview=State()
-
-def rnd(n=14): return ''.join(secrets.choice('123456789XxYy') for _ in range(n))
-
-async def new_code(counts=None):
-    """Generate a unique public media code."""
-    p=await get_pool()
-    while True:
-        code=f"JSShow_{rnd(14)}"
-        if not await p.fetchval('SELECT 1 FROM files WHERE code=$1 OR lower(review_code)=lower($1)',code):
-            return code
-
-async def new_review_code():
-    p=await get_pool()
-    while True:
-        code=f"JSShowreview_{rnd(10)}"
-        if not await p.fetchval('SELECT 1 FROM files WHERE lower(code)=lower($1) OR lower(review_code)=lower($1)',code):
-            return code
+from keyboards.join import join_kb
+from utils.force_sub import check_force_sub
+from utils.share_unlock import telegram_setting, share_url
+from utils.user_lang import get_user_language
 
 
-async def _lang(uid):
-    return (await get_lang(uid) or "id").lower()
+router = Router()
 
-def _t(lang, key, **kw):
-    T = {
-        "up_title": {
-            "id": "📤 <b>UP FILE</b>",
-            "en": "📤 <b>UPLOAD FILE</b>",
-            "zh": "📤 <b>上传文件</b>",
-        },
-        "up_start": {
-            "id": "Kirim maksimal <b>{max}</b> media.\nMedia sampai 20 MB akan diunggah ke Backblaze B2 dan tetap menyimpan Telegram file_id sebagai cadangan. Media di atas 20 MB memakai Telegram file_id. Jika upload B2 gagal, Telegram file_id tetap digunakan.\nSetelah selesai tekan <b>✅ Selesai Upload</b>.",
-            "en": "Send up to <b>{max}</b> media files.\nMedia up to 20 MB is uploaded to Backblaze B2 while keeping its Telegram file_id as fallback. Media above 20 MB uses the Telegram file_id. If B2 upload fails, the Telegram file_id is still used.\nWhen finished, press <b>✅ Finish Upload</b>.",
-            "zh": "最多发送 <b>{max}</b> 个媒体文件。\n20 MB 以内的媒体会上传到 Backblaze B2，同时保留 Telegram file_id 作为备用。超过 20 MB 的媒体使用 Telegram file_id。若 B2 上传失败，仍会使用 Telegram file_id。\n完成后点击 <b>✅ 完成上传</b>。",
-        },
-        "finish": {"id":"✅ Selesai Upload","en":"✅ Finish Upload","zh":"✅ 完成上传"},
-        "cancel": {"id":"❌ Batal","en":"❌ Cancel","zh":"❌ 取消"},
-        "received": {
-            "id":"✅ <b>{n}/{max}</b> media diterima.",
-            "en":"✅ <b>{n}/{max}</b> media received.",
-            "zh":"✅ 已接收 <b>{n}/{max}</b> 个媒体。",
-        },
-        "size": {"id":"📎 Ukuran: <b>{size:.1f} MB</b>","en":"📎 Size: <b>{size:.1f} MB</b>","zh":"📎 大小：<b>{size:.1f} MB</b>"},
-        "storage": {"id":"💾 Storage: <b>Telegram file_id</b>","en":"💾 Storage: <b>Telegram file_id</b>","zh":"💾 存储：<b>Telegram file_id</b>"},
-        "large": {
-            "id":"ℹ️ Media di atas 20 MB tidak dikirim ke B2.",
-            "en":"ℹ️ Media above 20 MB is not uploaded to B2.",
-            "zh":"ℹ️ 超过 20 MB 的媒体不会上传到 B2。",
-        },
-        "continue": {
-            "id":"Tekan <b>✅ Selesai Upload</b> untuk lanjut.",
-            "en":"Press <b>✅ Finish Upload</b> to continue.",
-            "zh":"点击 <b>✅ 完成上传</b> 继续。",
-        },
-        "b2_unavailable": {
-            "id":"⚠️ B2 tidak tersedia. Telegram file_id akan dipakai sebagai cadangan.",
-            "en":"⚠️ B2 is unavailable. Telegram file_id will be used as fallback.",
-            "zh":"⚠️ B2 不可用。将使用 Telegram file_id 作为备用。",
-        },
-        "loading": {
-            "id":"⏳ <b>Loading…</b>\n\n📤 Menyimpan media <b>{n}/{max}</b>",
-            "en":"⏳ <b>Loading…</b>\n\n📤 Saving media <b>{n}/{max}</b>",
-            "zh":"⏳ <b>加载中…</b>\n\n📤 正在保存媒体 <b>{n}/{max}</b>",
-        },
-        "saved": {
-            "id":"Tekan <b>✅ Selesai Upload</b> untuk lanjut.",
-            "en":"Press <b>✅ Finish Upload</b> to continue.",
-            "zh":"点击 <b>✅ 完成上传</b> 继续。",
-        },
-        "failed": {
-            "id":"❌ <b>Gagal memproses media.</b>\n\n📦 Tersimpan: <b>{n}/{max}</b>",
-            "en":"❌ <b>Failed to process media.</b>\n\n📦 Saved: <b>{n}/{max}</b>",
-            "zh":"❌ <b>处理媒体失败。</b>\n\n📦 已保存：<b>{n}/{max}</b>",
-        },
-        "no_media": {"id":"❌ Belum ada media.","en":"❌ No media uploaded yet.","zh":"❌ 尚未上传媒体。"},
-        "title_prompt": {
-            "id":"📝 <b>MASUKKAN JUDUL</b>\n\n📦 {n} media siap disimpan.\n\nKirim judul code:",
-            "en":"📝 <b>ENTER TITLE</b>\n\n📦 {n} media ready to save.\n\nSend the code title:",
-            "zh":"📝 <b>输入标题</b>\n\n📦 {n} 个媒体已准备保存。\n\n请输入 Code 标题：",
-        },
-        "title_empty": {"id":"❌ Judul tidak boleh kosong.","en":"❌ Title cannot be empty.","zh":"❌ 标题不能为空。"},
-        "tag_prompt": {
-            "id":"🏷 <b>MASUKKAN TAG</b>\n\nContoh: <code>movie action 2026</code>\nKirim maksimal 10 tag. Jika tidak ada, kirim <code>-</code>.",
-            "en":"🏷 <b>ENTER TAGS</b>\n\nExample: <code>movie action 2026</code>\nSend up to 10 tags. If none, send <code>-</code>.",
-            "zh":"🏷 <b>输入标签</b>\n\n示例：<code>movie action 2026</code>\n最多发送 10 个标签。如果没有，请发送 <code>-</code>。",
-        },
-        "price_prompt": {
-            "id":"💰 <b>MASUKKAN HARGA CODE</b>\n\nAdmin dapat membuat paid code.\nMinimal Rp{min} • Maksimal Rp{max} • kelipatan Rp1.000\nKirim <code>0</code> untuk FREE.",
-            "en":"💰 <b>ENTER CODE PRICE</b>\n\nAdmins can create paid codes.\nMinimum Rp{min} • Maximum Rp{max} • increments of Rp1,000\nSend <code>0</code> for FREE.",
-            "zh":"💰 <b>输入 CODE 价格</b>\n\n创作者可以创建付费 Code。\n最低 Rp{min} • 最高 Rp{max} • 必须为 Rp1,000 的倍数\n发送 <code>0</code> 表示免费。",
-        },
-        "media_missing": {"id":"❌ Media tidak ditemukan. Silakan mulai UP FILE lagi.","en":"❌ Media not found. Please start UP FILE again.","zh":"❌ 找不到媒体。请重新开始上传。"},
-        "price_invalid": {"id":"❌ Harga tidak valid.","en":"❌ Invalid price.","zh":"❌ 价格无效。"},
-        "price_range": {
-            "id":"❌ Harga harus Rp{min} s/d Rp{max}.",
-            "en":"❌ Price must be between Rp{min} and Rp{max}.",
-            "zh":"❌ 价格必须在 Rp{min} 至 Rp{max} 之间。",
-        },
-        "cancelled": {"id":"❌ Upload dibatalkan.","en":"❌ Upload cancelled.","zh":"❌ 上传已取消。"},
-    }
-    lang = lang if lang in ("id","en","zh") else "id"
-    return T[key][lang].format(**kw)
 
-def _media_kb(lang):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=_t(lang, "finish"), callback_data="up_finish")],
-        [InlineKeyboardButton(text=_t(lang, "cancel"), callback_data="up_cancel")]
-    ])
+# =========================================================
+# CONFIG
+# =========================================================
 
-def media_kb(lang='id'):
-    return _media_kb(lang)
+MAX_MEDIA = 100
+MAX_REVIEW_PHOTOS = 5
 
-def clean_tags(s):
-    parts=[re.sub(r'[,\n#]+',' ',x).strip() for x in (s or '').split()]
-    return [x[:30] for x in parts if x][:10]
+# Jangan terlalu sering edit message progress.
+UPDATE_DELAY = 0.7
 
-@router.message(F.chat.type == "private", Command("upload"))
-async def upload_command(m: Message, state: FSMContext):
-    if not await admin_access(m.from_user.id):
-        return await m.answer("❌ Perintah /upload khusus admin/owner.")
-    await state.clear()
-    await state.set_state(U.media)
-    lang=await _lang(m.from_user.id)
-    await state.update_data(media=[],status_message_id=None,lang=lang)
-    msg=await m.answer(
-        _t(lang,"up_title")+"\\n\\n"+_t(lang,"up_start",max=MAX_MEDIA),
-        parse_mode="HTML",reply_markup=_media_kb(lang))
-    await state.update_data(status_message_id=msg.message_id)
+# Delay kecil setelah copy berhasil.
+# Kecepatan utama didapat dari tidak memakai global copy lock.
+COPY_DELAY = 1.5
 
-@router.callback_query(F.data=='upfile')
-async def start(c,state):
-    if not await admin_access(c.from_user.id):
-        lang = await _lang(c.from_user.id)
-        return await c.answer("Fitur ini khusus admin/owner." if lang == "id" else "This feature is for admins/owner only.", show_alert=True)
-    await loading(c); await state.clear(); await state.set_state(U.media)
-    lang = await _lang(c.from_user.id)
-    await state.update_data(media=[],status_message_id=None, lang=lang)
+# Channel review paid file.
+REVIEW_CHANNEL_ID = -1003993516320
+
+
+# =========================================================
+# LOGGING
+# =========================================================
+
+logger = logging.getLogger(__name__)
+
+
+# =========================================================
+# RUNTIME LOCKS / THROTTLE
+# =========================================================
+
+_last_update: Dict[int, float] = {}
+
+_user_locks: Dict[int, asyncio.Lock] = {}
+_user_lock_refs: Dict[int, int] = {}
+
+_channel_send_lock = asyncio.Lock()
+_storage_ready = False
+_last_channel_send = 0.0
+CHANNEL_SEND_DELAY = 1.0
+
+
+async def safe_channel_send(bot, chat_id, text, **kwargs):
+    """Serialize update-channel posts and keep a conservative interval."""
+    global _last_channel_send
+    async with _channel_send_lock:
+        configured_delay = await telegram_setting(
+            "telegram_channel_delay",
+            CHANNEL_SEND_DELAY,
+        )
+        wait = configured_delay - (time.monotonic() - _last_channel_send)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        while True:
+            try:
+                msg = await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+                _last_channel_send = time.monotonic()
+                return msg
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(max(float(exc.retry_after), 1.0) + 0.5)
+
+
+
+# =========================================================
+# USER LOCK
+# =========================================================
+
+def get_lock(user_id: int) -> asyncio.Lock:
+    """
+    Satu user hanya boleh menjalankan satu proses upload
+    pada satu waktu.
+
+    User berbeda tetap dapat upload secara bersamaan.
+    """
+
+    lock = _user_locks.get(user_id)
+
+    if lock is None:
+        lock = asyncio.Lock()
+        _user_locks[user_id] = lock
+
+    return lock
+
+
+@asynccontextmanager
+async def user_lock(user_id: int):
+    """
+    Lock per-user dengan reference counter.
+
+    Setelah user selesai dan lock tidak dipakai lagi,
+    lock akan dihapus dari memory.
+    """
+
+    lock = get_lock(user_id)
+
+    _user_lock_refs[user_id] = (
+        _user_lock_refs.get(user_id, 0) + 1
+    )
+
     try:
-        msg=await c.message.edit_text(
-            _t(lang, "up_title") + "\n\n" + _t(lang, "up_start", max=MAX_MEDIA),
-            parse_mode='HTML',reply_markup=_media_kb(lang))
-    except Exception:
-        msg=await c.message.answer(
-            _t(lang, "up_title") + "\n\n" + _t(lang, "up_start", max=MAX_MEDIA),
-            parse_mode='HTML',reply_markup=_media_kb(lang))
-    await state.update_data(status_message_id=msg.message_id)
 
-@router.message(F.chat.type == "private", U.media)
-async def receive(m,state):
-    uid=m.from_user.id
-    lock=_LOCKS.setdefault(uid,asyncio.Lock())
-    async with lock:
-        d=await state.get_data()
-        media=list(d.get('media',[]))
-        status_id=d.get('status_message_id')
-        lang = d.get('lang') or await _lang(uid)
-        path=None
+        async with lock:
+            yield
 
-        if len(media)>=MAX_MEDIA:
-            try: await m.delete()
-            except: pass
+    finally:
+
+        refs = _user_lock_refs.get(user_id, 1) - 1
+
+        if refs <= 0:
+
+            _user_lock_refs.pop(
+                user_id,
+                None,
+            )
+
+            # Jangan hapus lock yang sedang locked.
+            current_lock = _user_locks.get(user_id)
+
+            if (
+                current_lock is lock
+                and not lock.locked()
+            ):
+                _user_locks.pop(
+                    user_id,
+                    None,
+                )
+
+        else:
+
+            _user_lock_refs[user_id] = refs
+
+
+# =========================================================
+# SAFE CALLBACK ANSWER
+# =========================================================
+
+async def safe_callback_answer(
+    call: CallbackQuery,
+    text: Optional[str] = None,
+    show_alert: bool = False,
+):
+    """
+    Menjawab callback dengan aman.
+
+    Mencegah error:
+    - query is too old
+    - query ID is invalid
+    - callback sudah dijawab
+    """
+
+    try:
+
+        await call.answer(
+            text=text,
+            show_alert=show_alert,
+        )
+
+    except TelegramBadRequest as e:
+
+        error = str(e).lower()
+
+        if (
+            "query is too old" in error
+            or "query id is invalid" in error
+            or "query is already answered" in error
+        ):
+            logger.debug(
+                "IGNORED CALLBACK ANSWER ERROR | %s",
+                e,
+            )
             return
 
-        typ=fid=name=mime=None
-        size=0
-        obj=None
-        if m.photo:
-            obj=m.photo[-1]
-            typ='photo'; fid=obj.file_id; name=f'{obj.file_unique_id}.jpg'; mime='image/jpeg'; size=obj.file_size or 0
-        elif m.video:
-            obj=m.video
-            typ='video'; fid=obj.file_id; name=obj.file_name or f'{obj.file_unique_id}.mp4'; mime=obj.mime_type or 'video/mp4'; size=obj.file_size or 0
-        elif m.document:
-            obj=m.document
-            typ='document'; fid=obj.file_id; name=obj.file_name or obj.file_unique_id; mime=obj.mime_type or 'application/octet-stream'; size=obj.file_size or 0
-        elif m.audio:
-            obj=m.audio
-            typ='audio'; fid=obj.file_id; name=obj.file_name or f'{obj.file_unique_id}.mp3'; mime=obj.mime_type or 'audio/mpeg'; size=obj.file_size or 0
-        else:
-            try: await m.delete()
-            except: pass
-            return
+        logger.debug(
+            "CALLBACK ANSWER ERROR | %s",
+            e,
+        )
 
-        file_unique_id=getattr(obj,'file_unique_id',None)
-        # Backblaze path is limited to 20 MiB in this bot. Larger Telegram media
-        # must NEVER be downloaded; Telegram file_id is already enough to send it.
-        B2_MAX_BYTES=20*1024*1024
+    except Exception as e:
 
-        def file_id_record():
-            return {
-                'telegram_file_id':fid,
-                'telegram_file_unique_id':file_unique_id,
-                'drive_account':None,
-                'drive_file_id':None,
-                'type':typ,
-                'file_name':name,
-                'file_size':size,
-                'mime_type':mime,
-                'storage_status':'telegram_file_id_only',
-            }
+        logger.debug(
+            "CALLBACK ANSWER UNEXPECTED ERROR | %s",
+            e,
+        )
 
-        try:
-            # IMPORTANT: no getFile/download for >20 MiB.
-            if size > B2_MAX_BYTES:
-                media.append(file_id_record())
-                await state.update_data(media=media)
-                if status_id:
-                    try:
-                        await m.bot.edit_message_text(
-                            chat_id=m.chat.id,
-                            message_id=status_id,
-                            text=(_t(lang, "up_title") + "\n\n" +
-                                  _t(lang, "received", n=len(media), max=MAX_MEDIA) + "\n\n" +
-                                  _t(lang, "size", size=size / 1024 / 1024) + "\n" +
-                                  _t(lang, "storage") + "\n" +
-                                  _t(lang, "large") + "\n\n" +
-                                  _t(lang, "continue")),
-                            parse_mode='HTML',reply_markup=_media_kb(lang))
-                    except: pass
-                try: await m.delete()
-                except: pass
-                return
 
-            # Small media still goes to B2 when available. If B2 is unavailable,
-            # keep the Telegram file_id instead of rejecting the upload.
-            if not b2_pool.available:
-                # B2 is unavailable: retain Telegram file_id instead of skipping media.
-                fallback = file_id_record()
-                fallback["storage_status"] = "b2_unavailable_telegram_fallback"
-                media.append(fallback)
-                await state.update_data(media=media)
-                if status_id:
-                    try:
-                        await m.bot.edit_message_text(
-                            chat_id=m.chat.id, message_id=status_id,
-                            text=(_t(lang, "up_title") + "\n\n" +
-                                  _t(lang, "received", n=len(media), max=MAX_MEDIA) + "\n\n" +
-                                  _t(lang, "b2_unavailable")),
-                            parse_mode="HTML", reply_markup=_media_kb(lang))
-                    except Exception:
-                        pass
-                try:
-                    await m.delete()
-                except Exception:
-                    pass
-                return
+# =========================================================
+# UPLOAD STATE
+# =========================================================
 
-            if status_id:
-                try:
-                    await m.bot.edit_message_text(
-                        chat_id=m.chat.id,message_id=status_id,
-                        text=_t(lang, "loading", n=len(media)+1, max=MAX_MEDIA),
-                        parse_mode='HTML',reply_markup=_media_kb(lang))
-                except: pass
+class UploadState(StatesGroup):
 
-            fd,path=tempfile.mkstemp(prefix='pastele_')
-            os.close(fd)
-            try:
-                f=await m.bot.get_file(fid)
-                await m.bot.download_file(f.file_path,path)
-                account,key,_=await b2_pool.upload(path,name,mime)
-                media.append({
-                    'telegram_file_id':fid,
-                    'telegram_file_unique_id':file_unique_id,
-                    'drive_account':account,
-                    'drive_file_id':key,
-                    'type':typ,
-                    'file_name':name,
-                    'file_size':size,
-                    'mime_type':mime,
-                    'storage_status':'b2_available'
-                })
-            except Exception as exc:
-                # Never send B2 upload failures to the notification channel.
-                # Keep Telegram file_id as fallback so the media is still usable.
-                fallback = file_id_record()
-                fallback['storage_status'] = 'b2_failed_telegram_fallback'
-                media.append(fallback)
-                await state.update_data(media=media)
-                try:
-                    await (await get_pool()).execute(
-                        "INSERT INTO error_logs(source,message,user_id) VALUES($1,$2,$3)",
-                        'upfile_b2_fallback_file_id', str(exc)[:1000], uid)
-                except Exception:
-                    pass
-                if status_id:
-                    try:
-                        await m.bot.edit_message_text(
-                            chat_id=m.chat.id, message_id=status_id,
-                            text=(_t(lang, "up_title") + "\n\n" +
-                                  _t(lang, "received", n=len(media), max=MAX_MEDIA) + "\n\n" +
-                                  "⚠️ Backblaze B2 gagal untuk media ini. Telegram file_id disimpan sebagai cadangan; upload tetap dilanjutkan."),
-                            parse_mode='HTML', reply_markup=_media_kb(lang))
-                    except Exception:
-                        pass
-                try:
-                    await m.delete()
-                except Exception:
-                    pass
-                return
-            finally:
-                try: os.remove(path)
-                except: pass
-                path=None
+    upload = State()
 
-            await state.update_data(media=media)
-            if status_id:
-                try:
-                    await m.bot.edit_message_text(
-                        chat_id=m.chat.id,message_id=status_id,
-                        text=(_t(lang, "up_title") + "\n\n" +
-                              _t(lang, "received", n=len(media), max=MAX_MEDIA) + "\n\n" +
-                              _t(lang, "saved")),
-                        parse_mode='HTML',reply_markup=_media_kb(lang))
-                except: pass
-            try: await m.delete()
-            except: pass
+    wait_title = State()
 
-        except Exception as exc:
-            try: await m.delete()
-            except: pass
-            try:
-                await (await get_pool()).execute(
-                    "INSERT INTO error_logs(source,message,user_id) VALUES($1,$2,$3)",
-                    'upfile',str(exc)[:1000],uid)
-            except: pass
-            if status_id:
-                try:
-                    await m.bot.edit_message_text(
-                        chat_id=m.chat.id,message_id=status_id,
-                        text=_t(lang, "failed", n=len(media), max=MAX_MEDIA),
-                        parse_mode='HTML',reply_markup=_media_kb(lang))
-                except: pass
-        finally:
-            if path:
-                try: os.remove(path)
-                except: pass
+    wait_price = State()
 
-@router.callback_query(F.data=='up_finish')
-async def finish(c,state):
-    d=await state.get_data(); media=d.get('media',[])
-    lang = d.get('lang') or await _lang(c.from_user.id)
-    if not media:return await c.answer(_t(lang, "no_media"),show_alert=True)
-    p=await get_pool()
-    default_wm = str(await p.fetchval("SELECT value FROM settings WHERE key='default_watermark_enabled'") or 'on').lower() == 'on'
-    await state.update_data(
-        title='', tags=[], price=0,
-        server_name='Server 1 — Media 5th ke bawah', access_mode='all',
-        auto_delete=False, allow_forward=True, watermark_enabled=default_wm,
-        preview_media=[]
+    wait_review = State()
+
+
+# =========================================================
+# BAD WORD FILTER
+# =========================================================
+
+BAD_WORDS = {
+    "bocil",
+    "child",
+    "underage",
+    "minor",
+}
+
+
+def normalize(text: str) -> str:
+
+    return re.sub(
+        r"[^a-z0-9]",
+        "",
+        (text or "").lower(),
     )
-    await c.answer()
-    await show_config_panel(c.message, state)
-
-@router.message(U.title)
-async def title(m,state):
-    title=(m.text or '').strip()
-    lang = (await state.get_data()).get('lang') or await _lang(m.from_user.id)
-    if not title:return await m.answer(_t(lang, "title_empty"))
-    await state.update_data(title=title[:150]); await state.set_state(U.tags)
-    await m.answer(_t(lang, "tag_prompt"),parse_mode='HTML')
-
-@router.message(U.tags)
-async def tags(m,state):
-    raw=(m.text or '').strip()
-    tags=[] if raw=='-' else clean_tags(raw)
-    await state.update_data(tags=tags)
-
-    if not await admin_access(m.from_user.id):
-        await state.clear()
-        return await m.answer("Fitur upload hanya untuk admin/owner." if (await _lang(m.from_user.id)) == "id" else "Upload is available to admins/owner only.")
-    await state.set_state(U.price)
-    lang = (await state.get_data()).get('lang') or await _lang(m.from_user.id)
-    await m.answer(
-        _t(lang, "price_prompt", min=f"{PAID_CODE_MIN_IDR:,}".replace(",", "."), max=f"{PAID_CODE_MAX_IDR:,}".replace(",", ".")),
-        parse_mode='HTML')
 
 
-def _config_keyboard(d):
-    price = int(d.get('price') or 0)
-    server = html.escape(str(d.get('server_name') or 'Belum dipilih'))
-    access = html.escape(str(d.get('access_mode') or 'all').upper())
-    preview = list(d.get('preview_media') or [])
-    preview_label = f"{len(preview)} item" if preview else "Belum ada"
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"📝 Judul: {(str(d.get('title') or 'Belum diisi'))[:28]}", callback_data='upcfg:title')],
-        [InlineKeyboardButton(text=f"🏷 Tag: {', '.join(d.get('tags') or [])[:28] or '-'}", callback_data='upcfg:tags')],
-        [InlineKeyboardButton(text=f"💰 Harga: {'GRATIS' if price == 0 else 'Rp'+format(price, ',').replace(',', '.')}", callback_data='upcfg:price')],
-        [InlineKeyboardButton(text=f"🗂 Server: {server[:35]}", callback_data='upcfg:server')],
-        [InlineKeyboardButton(text=f"🔐 Akses: {access}", callback_data='upcfg:access')],
-        [InlineKeyboardButton(text=f"🗑 Auto-delete: {'ON' if d.get('auto_delete') else 'OFF'}", callback_data='upcfg:delete')],
-        [InlineKeyboardButton(text=f"↗️ Izinkan forward: {'YA' if d.get('allow_forward', True) else 'TIDAK'}", callback_data='upcfg:forward')],
-        [InlineKeyboardButton(text=f"💧 Watermark: {'ON' if d.get('watermark_enabled') else 'OFF'}", callback_data='upcfg:watermark')],
-        [InlineKeyboardButton(text=f"🖼 Preview: {preview_label}", callback_data='upcfg:preview')],
-        [InlineKeyboardButton(text='👁 Lihat Preview', callback_data='upcfg:preview_show')],
-        [InlineKeyboardButton(text=f"📢 Wajib Join: {len(d.get('required_join_channels') or [])} channel/grup", callback_data='upcfg:join')],
-        [InlineKeyboardButton(text='✅ SIMPAN & PUBLIKASIKAN', callback_data='upcfg:save')],
-        [InlineKeyboardButton(text='❌ Batalkan Upload', callback_data='up_cancel')],
-    ])
+def is_bad(text: str) -> bool:
 
-async def show_config_panel(target, state):
-    d = await state.get_data()
-    media = list(d.get('media') or [])
-    if not media:
-        await state.clear()
-        return await target.answer('❌ Media tidak ditemukan. Silakan mulai upload lagi.')
-    price = int(d.get('price') or 0)
-    preview = list(d.get('preview_media') or [])
-    text = (
-        '⚙️ <b>PANEL PENGATURAN CODE</b>\n\n'
-        'Tekan bagian yang ingin diubah. Perubahan belum disimpan sampai tombol SIMPAN ditekan.\n\n'
-        f"📦 Media utama: <b>{len(media)}</b> item\n"
-        f"📝 Judul: <b>{html.escape(str(d.get('title') or 'Belum diisi'))}</b>\n"
-        f"🏷 Tag: <b>{html.escape(', '.join(d.get('tags') or []) or '-')}</b>\n"
-        f"💰 Harga: <b>{'GRATIS' if price == 0 else 'Rp'+format(price, ',').replace(',', '.')}</b>\n"
-        f"🗂 Server: <b>{html.escape(str(d.get('server_name') or 'Belum dipilih'))}</b>\n"
-        f"🔐 Akses: <b>{html.escape(str(d.get('access_mode') or 'all').upper())}</b>\n"
-        f"🖼 Preview gratis: <b>{len(preview)} item</b>\n"
-        f"📢 Join group: <b>{len(d.get('required_join_channels') or [])} channel/grup</b>"
+    clean = normalize(text)
+
+    return any(
+        word in clean
+        for word in BAD_WORDS
     )
-    await state.set_state(None)
-    try:
-        if isinstance(target, CallbackQuery):
-            await target.message.edit_text(text, parse_mode='HTML', reply_markup=_config_keyboard(d))
-        else:
-            await target.answer(text, parse_mode='HTML', reply_markup=_config_keyboard(d))
-    except Exception:
-        await target.answer(text, parse_mode='HTML', reply_markup=_config_keyboard(d))
 
-async def _config_guard(c):
-    if not await admin_access(c.from_user.id):
-        await c.answer('Khusus admin/owner.', show_alert=True)
+
+# =========================================================
+# SAFE UPDATE
+# =========================================================
+
+async def safe_update(
+    bot,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    reply_markup=None,
+):
+    """
+    Edit progress message dengan throttle.
+
+    Menghindari:
+    - terlalu banyak edit
+    - message is not modified
+    - message tidak ditemukan
+    """
+
+    now = time.monotonic()
+
+    last = _last_update.get(
+        chat_id,
+        0,
+    )
+
+    if now - last < UPDATE_DELAY:
         return False
-    return True
 
-@router.callback_query(F.data.startswith('upcfg:'))
-async def config_action(c: CallbackQuery, state: FSMContext):
-    if not await _config_guard(c): return
-    action = c.data.split(':', 1)[1]
-    d = await state.get_data()
-    await c.answer()
-    if action == 'title':
-        await state.set_state(U.panel_title)
-        return await c.message.edit_text('📝 <b>UBAH JUDUL CODE</b>\nKirim judul baru (maksimal 150 karakter).', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
-    if action == 'tags':
-        await state.set_state(U.panel_tags)
-        return await c.message.edit_text('🏷 <b>UBAH TAG</b>\nKirim maksimal 10 tag, atau kirim <code>-</code> untuk menghapus semua tag.', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
-    if action == 'price':
-        await state.set_state(U.panel_price)
-        return await c.message.edit_text(f'💰 <b>UBAH HARGA</b>\nKirim <code>0</code> untuk GRATIS. Harga berbayar Rp{PAID_CODE_MIN_IDR:,}–Rp{PAID_CODE_MAX_IDR:,}.'.replace(',', '.'), parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🆓 Jadikan Gratis', callback_data='upcfgpricefree')],[InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
-    if action == 'server':
-        p = await get_pool()
-        rows = await p.fetch('SELECT server_no,name FROM server_categories WHERE enabled=TRUE ORDER BY server_no')
-        if not rows: rows = [{'server_no': i, 'name': f'Server {i}'} for i in range(1, 11)]
-        buttons = [[InlineKeyboardButton(text=f"🗂 {r['server_no']} — {r['name']}", callback_data=f"upcfgserver:{r['server_no']}")] for r in rows]
-        buttons.append([InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')])
-        return await c.message.edit_text('🗂 <b>PILIH SERVER</b>', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-    if action == 'access':
-        return await c.message.edit_text('🔐 <b>PILIH AKSES CODE</b>', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='🌐 ALL', callback_data='upcfgaccess:all'), InlineKeyboardButton(text='🆓 FREE', callback_data='upcfgaccess:free'), InlineKeyboardButton(text='⭐ VIP', callback_data='upcfgaccess:vip')],
-            [InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
-    if action in ('delete','forward','watermark'):
-        key = {'delete':'auto_delete','forward':'allow_forward','watermark':'watermark_enabled'}[action]
-        await state.update_data(**{key: not bool(d.get(key, action == 'forward'))})
-        return await show_config_panel(c, state)
-    if action == 'join':
-        p=await get_pool()
-        channels=await p.fetch("SELECT id,title,chat_id,join_url FROM access_join_channels WHERE enabled=TRUE ORDER BY id")
-        selected=set(int(x) for x in (d.get('required_join_channels') or []))
-        rows=[]
-        for ch in channels:
-            mark='✅' if int(ch['id']) in selected else '▫️'
-            rows.append([InlineKeyboardButton(text=f"{mark} {ch['title'][:35]}",callback_data=f"upcfgjoin:{ch['id']}")])
-        rows.append([InlineKeyboardButton(text='↩️ Kembali',callback_data='upcfg:back')])
-        return await c.message.edit_text('📢 <b>PILIH WAJIB JOIN</b>\nPilih satu atau beberapa channel/grup yang harus diikuti sebelum media dibuka.',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
-    if action == 'preview':
-        preview = list(d.get('preview_media') or [])
-        return await c.message.edit_text(f'🖼 <b>PENGATURAN PREVIEW</b>\n\nSaat ini: <b>{len(preview)} item</b>.\nPilih tambah, ganti seluruh preview, atau hapus.', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='➕ Tambah Preview', callback_data='upcfgpreview:add')],
-            [InlineKeyboardButton(text='🔄 Ganti Preview', callback_data='upcfgpreview:replace')],
-            [InlineKeyboardButton(text='🗑 Hapus Semua Preview', callback_data='upcfgpreview:delete')],
-            [InlineKeyboardButton(text='↩️ Kembali', callback_data='upcfg:back')]]))
-    if action == 'preview_show':
-        preview = list(d.get('preview_media') or [])
-        if not preview:
-            return await c.answer('Belum ada preview.', show_alert=True)
-        try:
-            from utils.media_sender import deliver_one, deliver_telegram_file_id
-            for item in preview:
-                cap='🖼 Preview gratis' if item is preview[0] else None
-                if item.get('drive_account') is not None and item.get('drive_file_id'):
-                    try:
-                        await deliver_one(c.bot,c.from_user.id,item,caption=cap)
-                    except Exception:
-                        await deliver_telegram_file_id(c.bot,c.from_user.id,item,caption=cap)
-                else:
-                    await deliver_telegram_file_id(c.bot,c.from_user.id,item,caption=cap)
-        except Exception as e:
-            await c.message.answer(f'Preview tidak dapat dikirim: {html.escape(str(e)[:200])}')
-        return
-    if action == 'save':
-        if not str(d.get('title') or '').strip():
-            return await c.answer('Judul wajib diisi.', show_alert=True)
-        if not d.get('server_name'):
-            await state.update_data(server_name='Server 1 — Media 5th ke bawah')
-        await create_code(c.message, state, int(d.get('price') or 0), uid=c.from_user.id, username=c.from_user.username, full_name=c.from_user.full_name)
-    elif action == 'back':
-        await show_config_panel(c, state)
+    _last_update[chat_id] = now
 
-@router.callback_query(F.data.startswith('upcfgjoin:'))
-async def config_join_toggle(c: CallbackQuery,state: FSMContext):
-    if not await _config_guard(c): return
-    try: cid=int(c.data.split(':',1)[1])
-    except Exception: return await c.answer('Pilihan tidak valid.',show_alert=True)
-    d=await state.get_data(); selected=set(int(x) for x in (d.get('required_join_channels') or []))
-    if cid in selected: selected.remove(cid)
-    else: selected.add(cid)
-    await state.update_data(required_join_channels=sorted(selected))
-    await c.answer('Pilihan diperbarui.')
-    p=await get_pool(); channels=await p.fetch("SELECT id,title FROM access_join_channels WHERE enabled=TRUE ORDER BY id")
-    rows=[]
-    for ch in channels:
-        mark='✅' if int(ch['id']) in selected else '▫️'
-        rows.append([InlineKeyboardButton(text=f"{mark} {ch['title'][:35]}",callback_data=f"upcfgjoin:{ch['id']}")])
-    rows.append([InlineKeyboardButton(text='↩️ Kembali',callback_data='upcfg:back')])
-    await c.message.edit_text(f"📢 <b>PILIH WAJIB JOIN</b>\nTerpilih: {len(selected)} channel/grup",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    try:
 
-@router.callback_query(F.data == 'upcfgpricefree')
-async def config_price_free(c: CallbackQuery, state: FSMContext):
-    if not await _config_guard(c): return
-    await state.update_data(price=0)
-    await c.answer('Harga diubah menjadi GRATIS.')
-    await show_config_panel(c, state)
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
 
-@router.callback_query(F.data.startswith('upcfgserver:'))
-async def config_server(c: CallbackQuery, state: FSMContext):
-    if not await _config_guard(c): return
-    try: n = int(c.data.split(':', 1)[1])
-    except ValueError: return await c.answer('Server tidak valid.', show_alert=True)
-    p = await get_pool()
-    row = await p.fetchrow('SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE', n)
-    if not row: return await c.answer('Server tidak tersedia.', show_alert=True)
-    await state.update_data(server_name=f"Server {n} — {row['name']}")
-    await c.answer('Server diperbarui.')
-    await show_config_panel(c, state)
+        return True
 
-@router.callback_query(F.data.startswith('upcfgaccess:'))
-async def config_access(c: CallbackQuery, state: FSMContext):
-    if not await _config_guard(c): return
-    value = c.data.split(':', 1)[1]
-    if value not in {'all','free','vip'}: return await c.answer('Akses tidak valid.', show_alert=True)
-    updates = {'access_mode': value}
-    if value == 'free': updates['price'] = 0
-    await state.update_data(**updates)
-    await c.answer('Akses diperbarui.')
-    await show_config_panel(c, state)
+    except TelegramBadRequest as e:
 
-@router.message(U.panel_title)
-async def config_title_message(m: Message, state: FSMContext):
-    if not await admin_access(m.from_user.id): return
-    value = (m.text or '').strip()
-    if not value: return await m.answer('Judul tidak boleh kosong.')
-    await state.update_data(title=value[:150])
-    await show_config_panel(m, state)
+        error = str(e).lower()
 
-@router.message(U.panel_tags)
-async def config_tags_message(m: Message, state: FSMContext):
-    if not await admin_access(m.from_user.id): return
-    raw = (m.text or '').strip()
-    await state.update_data(tags=[] if raw == '-' else clean_tags(raw))
-    await show_config_panel(m, state)
+        if (
+            "message is not modified" in error
+            or "message to edit not found" in error
+            or "message can't be edited" in error
+            or "message identifier is not specified" in error
+        ):
+            return False
 
-@router.message(U.panel_price)
-async def config_price_message(m: Message, state: FSMContext):
-    if not await admin_access(m.from_user.id): return
-    try: price = int(re.sub(r'\D', '', m.text or ''))
-    except Exception: price = -1
-    if price < 0: return await m.answer('Harga tidak valid. Kirim angka, misalnya 15000.')
-    if price and (price < PAID_CODE_MIN_IDR or price > PAID_CODE_MAX_IDR):
-        return await m.answer(f'Harga harus Rp{PAID_CODE_MIN_IDR:,} sampai Rp{PAID_CODE_MAX_IDR:,}.'.replace(',', '.'))
-    await state.update_data(price=price)
-    await show_config_panel(m, state)
+        logger.debug(
+            "SAFE UPDATE BAD REQUEST | chat=%s | message=%s | error=%s",
+            chat_id,
+            message_id,
+            e,
+        )
 
-@router.callback_query(F.data.startswith('upcfgpreview:'))
-async def config_preview_action(c: CallbackQuery, state: FSMContext):
-    if not await _config_guard(c): return
-    action = c.data.split(':', 1)[1]
-    d = await state.get_data()
-    if action == 'delete':
-        await state.update_data(preview_media=[])
-        await c.answer('Semua preview dihapus.')
-        return await show_config_panel(c, state)
-    if action in {'add','replace'}:
-        await state.update_data(preview_edit_mode=action)
-        if action == 'replace': await state.update_data(preview_media=[])
-        await state.set_state(U.panel_preview)
-        await c.answer()
-        return await c.message.edit_text(
-            '🖼 <b>KIRIM PREVIEW</b>\n\nKirim 1 video ATAU maksimal 5 gambar. '
-            'Mode tambah akan mempertahankan preview lama; mode ganti menghapus preview lama terlebih dahulu. '
-            'Tekan Selesai jika sudah selesai.', parse_mode='HTML', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text='✅ Selesai Preview', callback_data='upcfgpreview:done')],
-                [InlineKeyboardButton(text='↩️ Batal / Kembali', callback_data='upcfg:back')]]))
-    if action == 'done':
-        await state.set_state(None)
-        await c.answer()
-        return await show_config_panel(c, state)
+        return False
 
-@router.message(U.panel_preview)
-async def config_preview_receive(m: Message, state: FSMContext):
-    if not await admin_access(m.from_user.id): return
-    d = await state.get_data()
-    items = list(d.get('preview_media') or [])
-    if m.video:
-        if items: return await m.answer('Preview hanya boleh 1 video atau maksimal 5 gambar. Hapus preview lama/gunakan mode ganti.')
-        obj=m.video; typ='video'; name=obj.file_name or 'preview.mp4'; mime=obj.mime_type or 'video/mp4'
-    elif m.photo:
-        if any(x.get('type') == 'video' for x in items): return await m.answer('Preview sudah berisi video; tidak bisa dicampur gambar.')
-        if len(items) >= 5: return await m.answer('Maksimal 5 gambar preview.')
-        obj=m.photo[-1]; typ='photo'; name=f'{obj.file_unique_id}.jpg'; mime='image/jpeg'
+    except Exception:
+
+        logger.exception(
+            "SAFE UPDATE ERROR | chat=%s | message=%s",
+            chat_id,
+            message_id,
+        )
+
+        return False
+
+
+# =========================================================
+# GENERATE UNIQUE CODE
+# =========================================================
+
+async def generate_code() -> str:
+    """Generate stable marketplace codes like Pastelebot_A18KA07JAMP1714."""
+    pool = await get_pool()
+    alphabet = string.ascii_uppercase + string.digits
+    while True:
+        suffix = "".join(secrets.choice(alphabet) for _ in range(14))
+        code = f"Pastelebot_{suffix}"
+        exists = await pool.fetchval("SELECT 1 FROM files WHERE LOWER(code)=LOWER($1) LIMIT 1", code)
+        if not exists:
+            return code
+
+
+async def generate_review_code() -> str:
+    """Generate a separate public code used only for free review/preview."""
+    pool = await get_pool()
+    alphabet = string.ascii_uppercase + string.digits
+    while True:
+        suffix = "".join(secrets.choice(alphabet) for _ in range(14))
+        code = f"PasteleReview_{suffix}"
+        exists = await pool.fetchval(
+            "SELECT 1 FROM files WHERE LOWER(review_code)=LOWER($1) LIMIT 1",
+            code,
+        )
+        if not exists:
+            return code
+
+
+# =========================================================
+# FORMAT RUPIAH
+# =========================================================
+
+def rupiah(amount: int) -> str:
+
+    return f"Rp{amount:,}".replace(
+        ",",
+        ".",
+    )
+
+
+# =========================================================
+# FORMAT USER ID
+# =========================================================
+
+def mask_user_id(user_id: int) -> str:
+
+    value = str(user_id)
+
+    if len(value) <= 4:
+        return value
+
+    return (
+        value[:2]
+        + "****"
+        + value[-2:]
+    )
+
+
+# =========================================================
+# UPLOAD KEYBOARD
+# =========================================================
+
+def upload_keyboard():
+
+    kb = InlineKeyboardBuilder()
+
+    kb.button(
+        text="⏹ STOP & SAVE",
+        callback_data="save_upfile",
+    )
+
+    kb.button(
+        text="❌ BATAL",
+        callback_data="cancel_upfile",
+    )
+
+    kb.adjust(1)
+
+    return kb.as_markup()
+
+
+# =========================================================
+# REVIEW KEYBOARD
+# =========================================================
+
+def review_keyboard():
+
+    kb = InlineKeyboardBuilder()
+
+    kb.button(
+        text="✅ SELESAI REVIEW",
+        callback_data="finish_review",
+    )
+
+    kb.button(
+        text="❌ BATAL",
+        callback_data="cancel_upfile",
+    )
+
+    kb.adjust(1)
+
+    return kb.as_markup()
+
+
+# =========================================================
+# HOME KEYBOARD
+# =========================================================
+
+def home_keyboard():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🏠 Home",
+                    callback_data="home",
+                )
+            ]
+        ]
+    )
+
+
+# =========================================================
+# START UPLOAD
+# =========================================================
+
+@router.callback_query(
+    F.data == "upfile"
+)
+async def start_upload(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+
+    # ACK SECEPAT MUNGKIN
+    await safe_callback_answer(
+        call
+    )
+
+    user_id = call.from_user.id
+
+    # -----------------------------------------------------
+    # FORCE SUB
+    # -----------------------------------------------------
+
+    if not await check_force_sub(
+        call.bot,
+        user_id,
+    ):
+
+        return await call.message.answer(
+            "❌ Kamu belum join channel.",
+            reply_markup=join_kb(),
+        )
+
+    # -----------------------------------------------------
+    # CHECK CREATOR
+    # -----------------------------------------------------
+
+    pool = await get_pool()
+
+    creator = await pool.fetchrow(
+        """
+        SELECT
+            is_creator,
+            creator_status
+        FROM users
+        WHERE user_id = $1
+        """,
+        user_id,
+    )
+
+    is_creator = bool(
+        creator
+        and creator["is_creator"]
+        and creator["creator_status"] == "approved"
+    )
+
+    # -----------------------------------------------------
+    # RESET STATE
+    # -----------------------------------------------------
+
+    await state.clear()
+
+    await state.set_state(
+        UploadState.upload
+    )
+
+    # -----------------------------------------------------
+    # SAVE USER INFO
+    # -----------------------------------------------------
+
+    await state.update_data(
+
+        upload_mode=True,
+
+        media=[],
+
+        title=None,
+
+        share_media=True,
+
+        is_paid=False,
+
+        price=0,
+
+        payment_provider=None,
+
+        review_photos=[],
+
+        saving=False,
+
+        progress_msg_id=None,
+
+        saving_msg_id=None,
+
+        is_creator=is_creator,
+
+        creator_id=user_id,
+
+        creator_username=call.from_user.username,
+
+        creator_fullname=(
+            call.from_user.full_name
+            or "Unknown"
+        ),
+    )
+
+    # -----------------------------------------------------
+    # TEXT
+    # -----------------------------------------------------
+
+    text = (
+        "📦 <b>UPLOAD MODE</b>\n\n"
+        "Silakan kirim file.\n"
+        f"Maksimal <b>{MAX_MEDIA}</b> media.\n\n"
+    )
+
+    if is_creator:
+
+        text += (
+            "🎨 Status : "
+            "<b>Kreator Terverifikasi</b> ✅\n\n"
+            "🆓 File FREE\n"
+            "💰 File PAID\n\n"
+        )
+
     else:
-        return await m.answer('Kirim 1 video atau maksimal 5 gambar.')
 
-    record={
-        'type':typ,'telegram_file_id':obj.file_id,
-        'telegram_file_unique_id':obj.file_unique_id,
-        'file_name':name,'mime_type':mime,'file_size':obj.file_size or 0,
-        'drive_account':None,'drive_file_id':None,
-        'storage_status':'telegram_file_id_only'
-    }
-    # Store preview media in B2 as well, so a preview remains deliverable
-    # after switching to a different Telegram bot token.
-    if b2_pool.available and record['file_size'] <= 20*1024*1024:
-        tmp=None
-        try:
-            fd,tmp=tempfile.mkstemp(prefix='jsshow_preview_'); os.close(fd)
-            tgfile=await m.bot.get_file(obj.file_id)
-            await m.bot.download_file(tgfile.file_path,tmp)
-            account,key,_=await b2_pool.upload(tmp,name,mime)
-            record.update({'drive_account':account,'drive_file_id':key,'storage_status':'b2_available'})
-        except Exception as exc:
-            record['storage_status']='b2_failed_telegram_fallback'
+        text += (
+            "👤 Status : <b>User</b>\n\n"
+            "🆓 File FREE tersedia.\n"
+            "🔒 File PAID hanya untuk "
+            "Kreator terverifikasi.\n\n"
+        )
+
+    text += (
+        "Kirim file satu per satu.\n"
+        "Jika selesai tekan <b>STOP & SAVE</b>."
+    )
+
+    # -----------------------------------------------------
+    # EDIT PROGRESS
+    # -----------------------------------------------------
+
+    try:
+
+        await call.message.edit_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=upload_keyboard(),
+        )
+
+        progress_id = (
+            call.message.message_id
+        )
+
+    except TelegramBadRequest:
+
+        msg = await call.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=upload_keyboard(),
+        )
+
+        progress_id = msg.message_id
+
+    except Exception:
+
+        logger.exception(
+            "START UPLOAD MESSAGE ERROR | user=%s",
+            user_id,
+        )
+
+        msg = await call.message.answer(
+            text,
+            parse_mode="HTML",
+            reply_markup=upload_keyboard(),
+        )
+
+        progress_id = msg.message_id
+
+    # -----------------------------------------------------
+    # SAVE PROGRESS ID
+    # -----------------------------------------------------
+
+    await state.update_data(
+        progress_msg_id=progress_id
+    )
+
+
+# =========================================================
+# RECEIVE MEDIA
+# =========================================================
+
+@router.message(
+    UploadState.upload,
+    F.document
+    | F.video
+    | F.photo,
+)
+async def receive_media(
+    message: Message,
+    state: FSMContext,
+):
+
+    user_id = message.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        # -------------------------------------------------
+        # CHECK UPLOAD MODE
+        # -------------------------------------------------
+
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
+            return
+
+        media = list(
+            data.get(
+                "media",
+                [],
+            )
+        )
+
+        # -------------------------------------------------
+        # MAX MEDIA
+        # -------------------------------------------------
+
+        if len(media) >= MAX_MEDIA:
+
             try:
-                await (await get_pool()).execute(
-                    "INSERT INTO error_logs(source,message,user_id) VALUES($1,$2,$3)",
-                    'preview_b2_upload_fallback',str(exc)[:1000],m.from_user.id)
+                await message.delete()
             except Exception:
                 pass
-        finally:
-            if tmp:
-                try: os.remove(tmp)
-                except OSError: pass
-    items.append(record)
-    await state.update_data(preview_media=items)
-    await m.answer(f'✅ Preview tersimpan sementara: {len(items)} item. Penyimpanan: {"B2" if record.get("drive_file_id") else "Telegram cadangan"}. Kirim lagi atau tekan Selesai Preview.', reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='✅ Selesai Preview', callback_data='upcfgpreview:done')],
-        [InlineKeyboardButton(text='↩️ Kembali ke Panel', callback_data='upcfg:back')]]))
 
-async def create_code(m,state,price:int, uid=None, username=None, full_name=None):
-    d=await state.get_data()
-    uid = int(uid or m.from_user.id)
-    username = username if username is not None else getattr(m.from_user, "username", None)
-    full_name = full_name if full_name is not None else getattr(m.from_user, "full_name", "")
-    media=d.get('media',[])
-    title=d.get('title','Untitled')
-    tags=d.get('tags',[])
-    if not media:
-        lang = await _lang(m.from_user.id)
+            return await message.answer(
+                f"❌ Maksimal {MAX_MEDIA} media."
+            )
+
+        # -------------------------------------------------
+        # CREATOR
+        # -------------------------------------------------
+
+        is_creator = bool(
+            data.get(
+                "is_creator",
+                False,
+            )
+        )
+
+        # -------------------------------------------------
+        # FILE DATA
+        # -------------------------------------------------
+
+        file_id = None
+        file_type = None
+        file_name = None
+        file_size = 0
+
+        if message.document:
+
+            file_type = "document"
+
+            file_id = (
+                message.document.file_id
+            )
+
+            file_name = (
+                message.document.file_name
+            )
+
+            file_size = (
+                message.document.file_size
+                or 0
+            )
+
+        elif message.video:
+
+            file_type = "video"
+
+            file_id = (
+                message.video.file_id
+            )
+
+            file_name = getattr(
+                message.video,
+                "file_name",
+                None,
+            )
+
+            file_size = (
+                message.video.file_size
+                or 0
+            )
+
+        elif message.photo:
+
+            file_type = "photo"
+
+            photo = message.photo[-1]
+
+            file_id = photo.file_id
+
+            file_size = (
+                photo.file_size
+                or 0
+            )
+
+        if not file_id:
+
+            return
+
+        # -------------------------------------------------
+        # DUPLICATE
+        # -------------------------------------------------
+
+        if any(
+            item.get("file_id") == file_id
+            for item in media
+        ):
+
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
+            return await message.answer(
+                "⚠️ File tersebut sudah ditambahkan."
+            )
+
+        # -------------------------------------------------
+        # FILE_ID STORAGE
+        # -------------------------------------------------
+        # Media is stored by Telegram file_id only. No storage channel,
+        # copy_message, or storage migration is used for uploads.
+        # file_id remains reusable by this bot after the original message
+        # is deleted, so the user's chat does not become the storage.
+        source_chat_id = int(message.chat.id)
+
+        # -------------------------------------------------
+        # APPEND
+        # -------------------------------------------------
+
+        media.append({
+            "message_id": int(message.message_id),
+            "source_chat_id": source_chat_id,
+            "file_id": file_id,
+            "type": file_type,
+            "file_name": file_name,
+            "file_size": file_size,
+            "position": len(media) + 1,
+        })
+
+        # -------------------------------------------------
+        # SAVE STATE
+        # -------------------------------------------------
+
+        await state.update_data(
+            media=media
+        )
+
+        # -------------------------------------------------
+        # PROGRESS
+        # -------------------------------------------------
+
+        progress_id = data.get(
+            "progress_msg_id"
+        )
+
+        if progress_id:
+
+            await safe_update(
+
+                message.bot,
+
+                message.chat.id,
+
+                progress_id,
+
+                (
+                    "📦 <b>UPLOAD MODE</b>\n\n"
+                    f"📁 Media : "
+                    f"<b>{len(media)}/{MAX_MEDIA}</b>\n"
+                    "💾 Penyimpanan : <b>Telegram file_id</b>\n\n"
+                    "Kirim media lagi atau tekan "
+                    "<b>STOP & SAVE</b>."
+                ),
+
+                upload_keyboard(),
+            )
+
+        # -------------------------------------------------
+        # DELETE ORIGINAL MESSAGE
+        # -------------------------------------------------
+        # The Telegram file_id is already stored, so the original upload
+        # message is not needed as storage.
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        logger.info(
+            "MEDIA ADDED | user=%s | type=%s | total=%s | file_id=%s | message_id=%s",
+            user_id,
+            file_type,
+            len(media),
+            file_id,
+            message.message_id,
+        )
+
+
+# =========================================================
+# CANCEL UPLOAD
+# =========================================================
+
+@router.callback_query(
+    F.data == "cancel_upfile"
+)
+async def cancel_upload(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+
+    await safe_callback_answer(
+        call
+    )
+
+    user_id = call.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        progress_id = data.get(
+            "progress_msg_id"
+        )
+
+        saving_id = data.get(
+            "saving_msg_id"
+        )
+
+        # -------------------------------------------------
+        # DELETE OLD MESSAGES
+        # -------------------------------------------------
+
+        for message_id in (
+            progress_id,
+            saving_id,
+        ):
+
+            if not message_id:
+                continue
+
+            try:
+
+                await call.bot.delete_message(
+                    chat_id=call.message.chat.id,
+                    message_id=message_id,
+                )
+
+            except Exception:
+                pass
+
+        # -------------------------------------------------
+        # CLEAR
+        # -------------------------------------------------
+
         await state.clear()
-        return await m.answer(_t(lang, "media_missing"))
 
-    counts=[
-        sum(x['type']=='photo' for x in media),
-        sum(x['type']=='video' for x in media),
-        sum(x['type']=='document' for x in media),
-    ]
-    code=await new_code(counts)
-    review_code=await new_review_code()
-    p=await get_pool()
-    # Make sure the owner row exists before inserting files (FK-safe on fresh DBs).
-    await p.execute("""INSERT INTO users(user_id,username,full_name)
-        VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET
-        username=COALESCE(EXCLUDED.username,users.username),
-        full_name=COALESCE(EXCLUDED.full_name,users.full_name)""",
-        uid, username,
-        (full_name or '').strip()[:200])
-    # Critical: previously the handler generated a code but never persisted its
-    # media record, so Getfile could not resolve the generated code.
-    server_name=d.get('server_name','Server 1 — Media 5th ke bawah')
-    access_mode=d.get('access_mode','all')
-    auto_delete=bool(d.get('auto_delete',False))
-    allow_forward=bool(d.get('allow_forward',True))
-    watermark_enabled=bool(d.get('watermark_enabled', str(await p.fetchval("SELECT value FROM settings WHERE key='default_watermark_enabled'") or 'on').lower() == 'on'))
-    # Preview is supplied separately at the end of upload. Never expose paid
-    # media as a free preview by automatically reusing the full media list.
-    review_items = list(d.get('preview_media', []))[:5]
-    if any(x.get('type') == 'video' for x in review_items):
-        review_items = review_items[:1]
-    await p.execute("""INSERT INTO files
-        (code,review_code,code_type,owner_id,title,media,review_media,media_count,photo_count,video_count,document_count,audio_count,
-         code_value_idr,price_idr,tags,server_name,access_mode,auto_delete,allow_forward,watermark_enabled,required_join_channels,active)
-        VALUES($1,$2,'media',$3,$4,$5::jsonb,$6::jsonb,$7,$8,$9,$10,$11,$12,$12,$13,$14,$15,$16,$17,$18,$19,TRUE)""",
-        code, review_code, uid, title[:150], json.dumps(media,ensure_ascii=False),
-        json.dumps(review_items,ensure_ascii=False), len(media), counts[0], counts[1], counts[2],
-        sum(x.get('type')=='audio' for x in media), price, tags, server_name, access_mode, auto_delete, allow_forward, watermark_enabled, list(d.get('required_join_channels') or []))
+        # -------------------------------------------------
+        # RESPONSE
+        # -------------------------------------------------
 
-    await state.clear()
-    tagtext=' '.join('#'+html.escape(t) for t in tags) or '-'
-    lang = await get_lang(uid) or 'id'
-    labels = {
-        'id': ('Save Successful', 'Judul', 'Tag', 'Tipe', 'Bot', 'media', 'gratis', 'berbayar'),
-        'en': ('Save Successful', 'Title', 'Tag', 'Type', 'Bot', 'media', 'free', 'paid'),
-        'zh': ('创建成功', '标题', '标签', '类型', '机器人', '媒体', '免费', '付费'),
-    }
-    success, lbl_title, lbl_tag, lbl_type, lbl_bot, lbl_media, free_txt, paid_txt = labels.get(lang, labels['id'])
-    type_text = paid_txt if price > 0 else free_txt
-    from utils.bot_identity import get_bot_username
-    bot_name = await get_bot_username()
-    bot_text = f'@{html.escape(bot_name)}' if bot_name else '-'
-    media_summary = f"{counts[1]}v{counts[0]}p" if counts[1] or counts[0] else f"{len(media)} media"
-    price_summary = f"Rp{price:,}".replace(',', '.') if price else 'GRATIS'
-    # Keep a convenient deep link so admin can immediately verify the free review.
-    review_url = f"https://t.me/{bot_name}?start={review_code}" if bot_name else None
-    media_url = f"https://t.me/{bot_name}?start={code}" if bot_name else None
-    summary_kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text='👁 Lihat Review Gratis', url=review_url)] if review_url else [InlineKeyboardButton(text='⭐ Code Review', callback_data=f'getcode:{review_code}')],
-        [InlineKeyboardButton(text='🔑 Buka Code Media', url=media_url)] if media_url else [InlineKeyboardButton(text='🔑 Code Media', callback_data=f'getcode:{code}')],
-    ])
-    await m.answer(
-        f'✅ <b>{success}</b>\n'
-        f'📝 Judul: {html.escape(title)}\n'
-        f'⭐ Code review: <code>{html.escape(review_code)}</code>\n'
-        f'🔑 Code media: <code>{html.escape(code)}</code>\n'
-        f'💰 Price: <b>{html.escape(price_summary)}</b>\n'
-        f'📦 Media: <b>{html.escape(media_summary)}</b> ({len(media)} total)\n'
-        f'🗑 Hapus: <b>{"Ya" if auto_delete else "Tidak"}</b>\n'
-        f'🚫 Batas forward: <b>{"Ya" if not allow_forward else "Tidak"}</b>\n'
-        f'🗂 Server: <b>{html.escape(server_name)}</b>\n'
-        f'🤖 Bot: {bot_text}\n'
-        f'🏷 Tag: {tagtext}\n'
-        f'🔐 Akses: {html.escape(access_mode.upper())}\n'
-        f'💧 Watermark: {"ON" if watermark_enabled else "OFF"}\n'
-        f'🏷 Tipe: {type_text}',
-        parse_mode='HTML', reply_markup=summary_kb)
+        try:
+
+            await call.message.edit_text(
+                "❌ <b>Upload dibatalkan.</b>",
+                parse_mode="HTML",
+                reply_markup=home_keyboard(),
+            )
+
+        except Exception:
+
+            await call.message.answer(
+                "❌ <b>Upload dibatalkan.</b>",
+                parse_mode="HTML",
+                reply_markup=home_keyboard(),
+            )
 
 
-@router.message(U.price)
-async def price(m,state):
-    d=await state.get_data()
+# =========================================================
+# CHOOSE SHARE MODE
+# =========================================================
+
+@router.callback_query(
+    F.data == "save_upfile"
+)
+async def choose_share_mode(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+
+    # ACK SEBELUM DB/STATE
+    await safe_callback_answer(
+        call
+    )
+
+    user_id = call.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
+
+            return await call.message.answer(
+                "❌ Sesi upload sudah berakhir."
+            )
+
+        media = list(
+            data.get(
+                "media",
+                [],
+            )
+        )
+
+        if not media:
+
+            return await call.message.answer(
+                "❌ Belum ada media."
+            )
+
+        # -------------------------------------------------
+        # KEYBOARD
+        # -------------------------------------------------
+
+        kb = InlineKeyboardBuilder()
+
+        kb.button(
+            text="🔗 Share Media",
+            callback_data="share_yes",
+        )
+
+        kb.button(
+            text="🔒 Private",
+            callback_data="share_no",
+        )
+
+        kb.adjust(2)
+
+        await call.message.edit_text(
+
+            "📦 <b>PILIH MODE FILE</b>\n\n"
+            "🔗 <b>Share Media</b>\n"
+            "File bisa dibuka melalui link.\n\n"
+            "🔒 <b>Private</b>\n"
+            "File hanya dapat dibuka melalui code.",
+
+            parse_mode="HTML",
+
+            reply_markup=kb.as_markup(),
+        )
+
+
+# =========================================================
+# SHARE HANDLER
+# =========================================================
+
+@router.callback_query(
+    F.data.startswith("share_")
+)
+async def share_handler(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+
+    await safe_callback_answer(
+        call
+    )
+
+    user_id = call.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
+
+            return await call.message.answer(
+                "❌ Sesi upload sudah berakhir."
+            )
+
+        share = (
+            call.data == "share_yes"
+        )
+
+        await state.update_data(
+            share_media=share
+        )
+
+        await state.set_state(
+            UploadState.wait_title
+        )
+
+        await call.message.edit_text(
+
+            "📝 <b>MASUKKAN JUDUL FILE</b>\n\n"
+            "Kirim judul file.\n"
+            "Ketik <code>/skip</code> "
+            "untuk menggunakan judul otomatis.",
+
+            parse_mode="HTML",
+        )
+
+
+# =========================================================
+# INPUT TITLE
+# =========================================================
+
+@router.message(
+    UploadState.wait_title
+)
+async def input_title(
+    message: Message,
+    state: FSMContext,
+):
+
+    user_id = message.from_user.id
+
+    async with user_lock(user_id):
+
+        title = (
+            message.text or ""
+        ).strip()
+
+        # -------------------------------------------------
+        # SKIP
+        # -------------------------------------------------
+
+        if title.lower() == "/skip":
+
+            title = "Untitled"
+
+        else:
+
+            if len(title) < 3:
+
+                return await message.answer(
+                    "❌ Judul minimal 3 karakter."
+                )
+
+            if len(title) > 150:
+
+                return await message.answer(
+                    "❌ Judul maksimal 150 karakter."
+                )
+
+            if is_bad(title):
+
+                return await message.answer(
+                    "❌ Judul tidak diperbolehkan."
+                )
+
+        # -------------------------------------------------
+        # SAVE TITLE
+        # -------------------------------------------------
+
+        await state.update_data(
+            title=title
+        )
+
+        # -------------------------------------------------
+        # FILE TYPE
+        # -------------------------------------------------
+
+        kb = InlineKeyboardBuilder()
+
+        kb.button(
+            text="🆓 FREE",
+            callback_data="file_free",
+        )
+
+        kb.button(
+            text="💰 PAID",
+            callback_data="file_paid",
+        )
+
+        kb.adjust(2)
+
+        await message.answer(
+
+            "💎 <b>PILIH TIPE FILE</b>\n\n"
+            "🆓 <b>FREE</b>\n"
+            "File dapat diakses gratis.\n\n"
+            "💰 <b>PAID</b>\n"
+            "File harus dibayar terlebih dahulu.\n\n"
+            "🔒 PAID hanya tersedia untuk "
+            "Kreator terverifikasi.",
+
+            parse_mode="HTML",
+
+            reply_markup=kb.as_markup(),
+        )
+
+
+# =========================================================
+# FREE FILE
+# =========================================================
+
+@router.callback_query(
+    F.data == "file_free"
+)
+async def file_free(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+
+    await safe_callback_answer(
+        call
+    )
+
+    user_id = call.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
+
+            return await call.message.answer(
+                "❌ Sesi upload sudah berakhir."
+            )
+
+        if not data.get("media"):
+
+            return await call.message.answer(
+                "❌ Tidak ada media."
+            )
+
+        await state.update_data(
+
+            is_paid=False,
+
+            price=0,
+
+            payment_provider=None,
+
+            review_photos=[],
+
+            saving_msg_id=call.message.message_id,
+        )
+
+        try:
+
+            await call.message.edit_text(
+                "⏳ <b>Menyimpan file...</b>",
+                parse_mode="HTML",
+            )
+
+        except Exception:
+            pass
+
+        await finalize_save(
+            message=call.message,
+            state=state,
+            user_id=user_id,
+        )
+
+
+# =========================================================
+# PAID FILE
+# =========================================================
+
+@router.callback_query(
+    F.data == "file_paid"
+)
+async def file_paid(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+
+    # ACK PALING AWAL
+    await safe_callback_answer(
+        call
+    )
+
+    user_id = call.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        if not data.get(
+            "upload_mode",
+            False,
+        ):
+
+            return await call.message.answer(
+                "❌ Sesi upload sudah berakhir."
+            )
+
+        is_creator = bool(
+            data.get(
+                "is_creator",
+                False,
+            )
+        )
+
+        if not is_creator:
+
+            return await call.message.answer(
+                "🔒 <b>PAID TERKUNCI</b>\n\n"
+                "Fitur PAID hanya tersedia "
+                "untuk Kreator terverifikasi.",
+                parse_mode="HTML",
+            )
+
+        await state.set_state(
+            UploadState.wait_price
+        )
+
+        await call.message.edit_text(
+
+            "💰 <b>MASUKKAN HARGA FILE</b>\n\n"
+            "Minimal : <b>Rp1.000</b>\n\n"
+            "🎨 Status : "
+            "<b>Kreator Terverifikasi</b> ✅\n\n"
+            "Contoh:\n"
+            "<code>1000</code>\n"
+            "<code>5000</code>\n"
+            "<code>10000</code>",
+
+            parse_mode="HTML",
+        )
+
+
+# =========================================================
+# INPUT PRICE
+# =========================================================
+
+@router.message(
+    UploadState.wait_price
+)
+async def input_price(
+    message: Message,
+    state: FSMContext,
+):
+
+    user_id = message.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        if not data.get(
+            "is_creator",
+            False,
+        ):
+
+            await state.set_state(
+                UploadState.wait_title
+            )
+
+            return await message.answer(
+                "🔒 <b>PAID TERKUNCI</b>\n\n"
+                "Hanya Kreator terverifikasi "
+                "yang dapat membuat file PAID.",
+                parse_mode="HTML",
+            )
+
+        # -------------------------------------------------
+        # PRICE
+        # -------------------------------------------------
+
+        raw = (
+            message.text or ""
+        ).strip()
+
+        raw = (
+            raw
+            .replace(".", "")
+            .replace(",", "")
+            .replace(" ", "")
+        )
+
+        if not raw.isdigit():
+
+            return await message.answer(
+
+                "❌ Harga harus berupa angka.\n\n"
+                "Contoh:\n"
+                "<code>1000</code>\n"
+                "<code>5000</code>\n"
+                "<code>10000</code>",
+
+                parse_mode="HTML",
+            )
+
+        price = int(raw)
+
+        if price < 1000:
+
+            return await message.answer(
+                "❌ Harga minimal <b>Rp1.000</b>.",
+                parse_mode="HTML",
+            )
+
+        # -------------------------------------------------
+        # SAVE
+        # -------------------------------------------------
+
+        await state.update_data(
+
+            is_paid=True,
+
+            price=price,
+
+            payment_provider="bayargg",
+
+            review_photos=[],
+        )
+
+        await state.set_state(
+            UploadState.wait_review
+        )
+
+        await message.answer(
+
+            "💰 <b>HARGA FILE</b>\n\n"
+            f"Harga : <b>{rupiah(price)}</b>\n\n"
+            "🖼 <b>UPLOAD REVIEW FILE</b>\n\n"
+            "File PAID wajib mempunyai "
+            "foto review.\n\n"
+            "📸 Minimal : <b>1 foto</b>\n"
+            "📸 Maksimal : <b>5 foto</b>\n\n"
+            "Contoh review:\n"
+            "• Screenshot isi file\n"
+            "• Preview produk\n"
+            "• Contoh hasil\n"
+            "• Screenshot materi\n\n"
+            "Kirim foto review sekarang.\n\n"
+            "Setelah selesai tekan:\n"
+            "✅ <b>SELESAI REVIEW</b>",
+
+            parse_mode="HTML",
+
+            reply_markup=review_keyboard(),
+        )
+
+
+# =========================================================
+# RECEIVE REVIEW PHOTO
+# =========================================================
+
+@router.message(
+    UploadState.wait_review,
+    F.photo,
+)
+async def receive_review_photo(
+    message: Message,
+    state: FSMContext,
+):
+
+    user_id = message.from_user.id
+
+    async with user_lock(user_id):
+
+        data = await state.get_data()
+
+        reviews = list(
+            data.get(
+                "review_photos",
+                [],
+            )
+            or []
+        )
+
+        # -------------------------------------------------
+        # MAX
+        # -------------------------------------------------
+
+        if len(reviews) >= MAX_REVIEW_PHOTOS:
+
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
+            return await message.answer(
+                f"❌ Maksimal {MAX_REVIEW_PHOTOS} foto review."
+            )
+
+        # -------------------------------------------------
+        # FILE ID
+        # -------------------------------------------------
+
+        photo = message.photo[-1]
+
+        file_id = photo.file_id
+
+        # -------------------------------------------------
+        # DUPLICATE
+        # -------------------------------------------------
+
+        if file_id in reviews:
+
+            try:
+                await message.delete()
+            except Exception:
+                pass
+
+            return await message.answer(
+                "⚠️ Foto review tersebut sudah ditambahkan."
+            )
+
+        # -------------------------------------------------
+        # APPEND
+        # -------------------------------------------------
+
+        reviews.append(
+            file_id
+        )
+
+        # -------------------------------------------------
+        # SAVE
+        # -------------------------------------------------
+
+        await state.update_data(
+            review_photos=reviews
+        )
+
+        logger.info(
+            "REVIEW PHOTO SAVED | user=%s | total=%s",
+            user_id,
+            len(reviews),
+        )
+
+        # -------------------------------------------------
+        # CONFIRM
+        # -------------------------------------------------
+
+        await message.answer(
+
+            "🖼 <b>REVIEW DITAMBAHKAN</b>\n\n"
+            f"Foto : "
+            f"<b>{len(reviews)}/{MAX_REVIEW_PHOTOS}</b>\n\n"
+            "Kirim foto review lagi atau tekan:\n"
+            "✅ <b>SELESAI REVIEW</b>",
+
+            parse_mode="HTML",
+
+            reply_markup=review_keyboard(),
+        )
+
+        # -------------------------------------------------
+        # DELETE USER PHOTO
+        # -------------------------------------------------
+
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+
+# =========================================================
+# FINISH REVIEW
+# =========================================================
+
+@router.callback_query(
+    F.data == "finish_review"
+)
+async def finish_review(
+    call: CallbackQuery,
+    state: FSMContext,
+):
+
+    # =====================================================
+    # ACK DULU
+    # =====================================================
+
+    await safe_callback_answer(
+        call
+    )
+
+    user_id = call.from_user.id
+
+    async with user_lock(user_id):
+
+        # -------------------------------------------------
+        # STATE
+        # -------------------------------------------------
+
+        current_state = (
+            await state.get_state()
+        )
+
+        logger.info(
+            "FINISH REVIEW | user=%s | state=%s",
+            user_id,
+            current_state,
+        )
+
+        if (
+            current_state
+            != UploadState.wait_review.state
+        ):
+
+            return await call.message.answer(
+                "❌ Sesi review sudah berakhir."
+            )
+
+        # -------------------------------------------------
+        # DATA
+        # -------------------------------------------------
+
+        data = await state.get_data()
+
+        reviews = list(
+            data.get(
+                "review_photos",
+                [],
+            )
+            or []
+        )
+
+        # -------------------------------------------------
+        # VALIDATE
+        # -------------------------------------------------
+
+        if len(reviews) < 1:
+
+            return await call.message.answer(
+                "❌ Minimal 1 foto review."
+            )
+
+        if len(reviews) > MAX_REVIEW_PHOTOS:
+
+            return await call.message.answer(
+                f"❌ Maksimal {MAX_REVIEW_PHOTOS} foto review."
+            )
+
+        # -------------------------------------------------
+        # SAVING MESSAGE
+        # -------------------------------------------------
+
+        try:
+
+            await call.message.edit_text(
+
+                "⏳ <b>MENYIMPAN FILE...</b>\n\n"
+                f"🖼 Review : "
+                f"<b>{len(reviews)} foto</b>\n\n"
+                "Mohon tunggu...",
+
+                parse_mode="HTML",
+            )
+
+        except Exception:
+            pass
+
+        await state.update_data(
+            saving_msg_id=call.message.message_id
+        )
+
+        # -------------------------------------------------
+        # FINAL SAVE
+        # -------------------------------------------------
+
+        await finalize_save(
+
+            message=call.message,
+
+            state=state,
+
+            user_id=user_id,
+        )
+
+
+# =========================================================
+# SEND PAID REVIEW
+# =========================================================
+
+async def send_paid_review(
+    bot,
+    *,
+    user_id: int,
+    username: Optional[str],
+    title: str,
+    code: str,
+    review_code: str,
+    price: int,
+    media_count: int,
+    review_photos: list,
+):
+
+    if not review_photos:
+        return
+
+    # -----------------------------------------------------
+    # BOT INFO
+    # -----------------------------------------------------
+
+    me = await bot.get_me()
+
+    bot_username = (
+        me.username
+        or "Unknown"
+    )
+
+    # -----------------------------------------------------
+    # ESCAPE HTML
+    # -----------------------------------------------------
+
+    safe_title = escape(
+        title or "Untitled"
+    )
+
+    safe_bot_username = escape(
+        bot_username
+    )
+
+    safe_code = escape(
+        code
+    )
+
+    # -----------------------------------------------------
+    # CLEAN REVIEW CAPTION
+    # -----------------------------------------------------
+
+    caption = (
+        "💰 <b>PAID FILE</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"🤖 Bot: @{safe_bot_username}\n"
+        f"📝 Judul: {safe_title}\n"
+        f"📦 Total media: {media_count}\n"
+        f"💎 Media: <b>{'PAID' if price > 0 else 'FREE'}</b>\n"
+        f"👀 Code review: <code>{escape(review_code)}</code>\n"
+        f"📦 Code media: <code>{safe_code}</code>\n"
+        f"💵 Harga: <b>{rupiah(price)}</b>\n"
+        "🛒 Code media digunakan untuk membuka media; code review gratis untuk melihat review."
+    )
+
+    # -----------------------------------------------------
+    # BUILD ALBUM
+    # -----------------------------------------------------
+
+    media_group = []
+
+    for index, photo_id in enumerate(
+        review_photos
+    ):
+
+        if index == 0:
+
+            media_group.append(
+                InputMediaPhoto(
+                    media=photo_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+            )
+
+        else:
+
+            media_group.append(
+                InputMediaPhoto(
+                    media=photo_id,
+                )
+            )
+
+    # -----------------------------------------------------
+    # SEND
+    # -----------------------------------------------------
+
     try:
-        price=int(re.sub(r'\D','',m.text or ''))
-    except:
-        price=-1
-    if not await admin_access(m.from_user.id):
+
+        await bot.send_media_group(
+            chat_id=REVIEW_CHANNEL_ID,
+            media=media_group,
+        )
+        await bot.send_message(
+            chat_id=REVIEW_CHANNEL_ID,
+            text=(
+                f"📝 <b>{safe_title}</b>\n"
+                f"👀 Code review: <code>{escape(review_code)}</code>\n"
+                f"📦 Code media: <code>{safe_code}</code>\n"
+                f"📦 Total media: <b>{media_count}</b>\n"
+                f"💎 Media: <b>{'PAID' if price > 0 else 'FREE'}</b>\n"
+                f"🤖 Bot: @{safe_bot_username}"
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👀 Buka Review", url=f"https://t.me/{bot_username}?start={review_code}")],
+                [InlineKeyboardButton(text="📦 Buka Code Media", url=f"https://t.me/{bot_username}?start={safe_code}")],
+            ]),
+        )
+
+        logger.info(
+            "PAID REVIEW SENT | code=%s | photos=%s",
+            code,
+            len(review_photos),
+        )
+
+    except TelegramRetryAfter as e:
+
+        retry_after = max(
+            float(e.retry_after),
+            0.5,
+        )
+
+        logger.warning(
+            "REVIEW RATE LIMIT | retry_after=%.2fs | code=%s",
+            retry_after,
+            code,
+        )
+
+        await asyncio.sleep(
+            retry_after + 0.2
+        )
+
+        await bot.send_media_group(
+            chat_id=REVIEW_CHANNEL_ID,
+            media=media_group,
+        )
+
+    except Exception:
+
+        logger.exception(
+            "PAID REVIEW ERROR | code=%s",
+            code,
+        )
+
+        raise
+
+
+# =========================================================
+# SEND UPLOAD LOG
+# =========================================================
+
+async def send_upload_log(
+    bot,
+    *,
+    user_id: int,
+    title: str,
+    code: str,
+    review_code: Optional[str],
+    media_count: int,
+    is_paid: bool,
+    price: int,
+):
+
+    try:
+
+        me = await bot.get_me()
+
+        bot_username = (
+            me.username
+            or "Unknown"
+        )
+
+        # -------------------------------------------------
+        # ESCAPE HTML
+        # -------------------------------------------------
+
+        safe_title = escape(
+            title or "Untitled"
+        )
+
+        safe_bot_username = escape(
+            bot_username
+        )
+
+        safe_code = escape(
+            code
+        )
+
+        mode = (
+            f"💰 PAID {rupiah(price)}"
+            if is_paid
+            else "🆓 FREE"
+        )
+
+        # -------------------------------------------------
+        # CLEAN UPDATE MESSAGE
+        # -------------------------------------------------
+
+        text = (
+            "📤 <b>UPLOAD BARU</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"🤖 Bot: @{safe_bot_username}\n"
+            f"🆔 ID: <code>{mask_user_id(user_id)}</code>\n"
+            f"📝 Judul: {safe_title}\n"
+            f"👀 Code review: <code>{escape(review_code or '-')}</code>\n"
+            f"📦 Code media: <code>{safe_code}</code>\n"
+            f"📦 Total media: {media_count}\n"
+            f"💎 Media: <b>{'PAID' if is_paid else 'FREE'}</b>\n"
+            f"💰 Harga: {rupiah(price) if is_paid else 'Gratis'}"
+        )
+
+        await bot.send_message(
+
+            chat_id=CHANNEL_ID,
+
+            text=text,
+
+            parse_mode="HTML",
+        )
+
+        logger.info(
+            "UPLOAD LOG SENT | code=%s",
+            code,
+        )
+
+    except Exception:
+
+        logger.exception(
+            "UPLOAD LOG ERROR | code=%s",
+            code,
+        )
+
+
+# =========================================================
+# FINAL SAVE
+# =========================================================
+
+async def finalize_save(
+    message: Message,
+    state: FSMContext,
+    user_id: int,
+):
+
+    data = await state.get_data()
+
+    # -----------------------------------------------------
+    # PREVENT DOUBLE SAVE
+    # -----------------------------------------------------
+
+    if data.get(
+        "saving",
+        False,
+    ):
+        return
+
+    await state.update_data(
+        saving=True
+    )
+
+    try:
+
+        # =================================================
+        # MEDIA
+        # =================================================
+
+        media = [
+
+            item
+
+            for item in (
+                data.get(
+                    "media",
+                    [],
+                )
+                or []
+            )
+
+            if item.get("file_id")
+        ]
+
+        if not media:
+
+            await state.update_data(
+                saving=False
+            )
+
+            return await message.answer(
+                "❌ Tidak ada media."
+            )
+
+        # =================================================
+        # BASIC DATA
+        # =================================================
+
+        title = (
+            data.get("title")
+            or "Untitled"
+        )
+
+        share_media = bool(
+            data.get(
+                "share_media",
+                True,
+            )
+        )
+
+        is_paid = bool(
+            data.get(
+                "is_paid",
+                False,
+            )
+        )
+
+        price = int(
+            data.get(
+                "price",
+                0,
+            )
+            or 0
+        )
+
+        payment_provider = (
+            data.get(
+                "payment_provider"
+            )
+        )
+
+        review_photos = list(
+            data.get(
+                "review_photos",
+                [],
+            )
+            or []
+        )
+
+        # =================================================
+        # PAID VALIDATION
+        # =================================================
+
+        if is_paid:
+
+            if not data.get(
+                "is_creator",
+                False,
+            ):
+
+                await state.update_data(
+                    saving=False
+                )
+
+                return await message.answer(
+                    "❌ Hanya Kreator "
+                    "terverifikasi yang dapat "
+                    "membuat file PAID."
+                )
+
+            if price < 1000:
+
+                await state.update_data(
+                    saving=False
+                )
+
+                return await message.answer(
+                    "❌ Harga PAID minimal Rp1.000."
+                )
+
+            if not review_photos:
+
+                await state.update_data(
+                    saving=False
+                )
+
+                await state.set_state(
+                    UploadState.wait_review
+                )
+
+                return await message.answer(
+                    "❌ File PAID wajib "
+                    "memiliki minimal 1 foto review."
+                )
+
+        else:
+
+            price = 0
+
+            payment_provider = None
+
+            review_photos = []
+
+        # =================================================
+        # USER DATA
+        # =================================================
+
+        username = data.get(
+            "creator_username"
+        )
+
+        fullname = (
+            data.get(
+                "creator_fullname"
+            )
+            or "Unknown"
+        )
+
+        # =================================================
+        # GENERATE CODE
+        # =================================================
+
+        code = await generate_code()
+        review_code = await generate_review_code() if review_photos else None
+
+        media_count = len(media)
+
+        # =================================================
+        # JSON
+        # =================================================
+
+        media_json = json.dumps(
+            media,
+            ensure_ascii=False,
+            separators=(
+                ",",
+                ":",
+            ),
+        )
+
+        review_json = json.dumps(
+            review_photos,
+            ensure_ascii=False,
+            separators=(
+                ",",
+                ":",
+            ),
+        )
+
+        # =================================================
+        # MEDIA VALUES
+        # =================================================
+
+        media_values = []
+
+        for item in media:
+
+            media_values.append(
+
+                (
+
+                    code,
+
+                    item.get(
+                        "message_id"
+                    ),
+
+                    item.get("source_chat_id"),
+
+                    item.get(
+                        "file_id"
+                    ),
+
+                    item.get(
+                        "type"
+                    ),
+
+                    item.get(
+                        "file_size",
+                        0,
+                    ),
+
+                    title,
+
+                    item.get(
+                        "position",
+                        0,
+                    ),
+                )
+            )
+
+        # =================================================
+        # DATABASE
+        # =================================================
+
+        pool = await get_pool()
+
+        # FREE upload economy: 1 point/media cost, 20% returned as reward.
+        # Charge atomically before creating the file so a failed upload cannot
+        # silently create a debt. Paid/VIP/creator uploads keep existing flow.
+        try:
+            from utils.user import get_user_status
+            current_level = await get_user_status(pool, user_id)
+        except Exception:
+            current_level = "free"
+        free_uploader = (current_level == "free" and not is_paid)
+        # FREE uploads never consume points.
+        # Reward is granted only for completed blocks of 50 media:
+        # 1-49 => 0, 50-99 => +10, 100 => +20.
+
+        async with pool.acquire() as conn:
+
+            async with conn.transaction():
+
+                # =========================================
+                # USER
+                # =========================================
+
+                await conn.execute(
+
+                    """
+                    INSERT INTO users (
+                        user_id,
+                        username,
+                        fullname
+                    )
+                    VALUES (
+                        $1,
+                        $2,
+                        $3
+                    )
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET
+                        username = EXCLUDED.username,
+                        fullname = EXCLUDED.fullname
+                    """,
+
+                    user_id,
+
+                    username,
+
+                    fullname,
+                )
+
+                # =========================================
+                # FILE
+                # =========================================
+
+                await conn.execute(
+                    """
+                    INSERT INTO files (
+                        code,
+                        review_code,
+                        title,
+                        creator,
+                        media,
+                        share_media,
+                        is_share,
+                        owner_id,
+                        seller_id,
+                        media_count,
+                        expires_at,
+                        is_paid,
+                        price,
+                        payment_provider,
+                        review_photos,
+                        view_count,
+                        download_count,
+                        favorite_count
+                    )
+                    VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                        NULL, $11, $12, $13, $14, 0, 0, 0
+                    )
+                    """,
+                    code,
+                    review_code,
+                    title,
+                    fullname,
+                    media_json,
+                    share_media,
+                    share_media,
+                    user_id,
+                    user_id,
+                    media_count,
+                    is_paid,
+                    price,
+                    payment_provider,
+                    review_json,
+                )
+
+                # =========================================
+                # MEDIA TABLE
+                # =========================================
+
+                if media_values:
+
+                    await conn.executemany(
+
+                        """
+                        INSERT INTO medias (
+                            code,
+                            message_id,
+                            source_chat_id,
+                            file_id,
+                            file_type,
+                            file_size,
+                            title,
+                            position
+                        )
+                        VALUES (
+                            $1,
+                            $2,
+                            $3,
+                            $4,
+                            $5,
+                            $6,
+                            $7,
+                            $8
+                        )
+                        """,
+
+                        media_values,
+                    )
+
+                # Stable address for every media inside the code.
+                me = await message.bot.get_me()
+                media_code_rows = [
+                    (f"{code}-m{int(item.get('position') or i):03d}", code,
+                     None, int(item.get('position') or i), me.username or "")
+                    for i, item in enumerate(media, 1)
+                ]
+                await conn.executemany(
+                    """INSERT INTO media_codes(media_code,file_code,media_id,position,bot_username)
+                       VALUES($1,$2,$3,$4,$5)
+                       ON CONFLICT(file_code,position) DO UPDATE SET media_code=EXCLUDED.media_code, bot_username=EXCLUDED.bot_username""",
+                    media_code_rows,
+                )
+
+                # =================================================
+                # UPLOAD POINT REWARD
+                # =================================================
+                # Uploading never costs points.
+                # Reward is granted only for completed blocks of 50:
+                # 1-49 media = 0 points
+                # 50-99 media = +10 points
+                # 100 media = +20 points.
+                from decimal import Decimal
+                upload_reward = Decimal(media_count // 50) * Decimal("10")
+                if upload_reward > 0:
+                    row_points = await conn.fetchrow(
+                        "SELECT points FROM users WHERE user_id=$1 FOR UPDATE",
+                        user_id,
+                    )
+                    if row_points:
+                        current_points = Decimal(str(row_points["points"] or 0))
+                        new_points = current_points + upload_reward
+                        reward_ref = f"upload_reward:{user_id}:{code}"
+                        await conn.execute(
+                            "UPDATE users SET points=$1, updated_at=NOW() WHERE user_id=$2",
+                            new_points,
+                            user_id,
+                        )
+                        await conn.execute(
+                            """INSERT INTO point_transactions(
+                                user_id, amount, balance_after, type, reference, description
+                            ) VALUES($1,$2,$3,'upload_reward',$4,$5)
+                            ON CONFLICT(reference) DO NOTHING""",
+                            user_id,
+                            upload_reward,
+                            new_points,
+                            reward_ref,
+                            f"Upload reward: {media_count} media = +{upload_reward} points",
+                        )
+
+        # =================================================
+        # DATABASE SUCCESS
+        # =================================================
+
+        logger.info(
+            "FILE SAVED | user=%s | code=%s | media=%s | paid=%s",
+            user_id,
+            code,
+            media_count,
+            is_paid,
+        )
+
+        # =================================================
+        # SAVE OLD MESSAGE IDS
+        # =================================================
+
+        progress_id = data.get(
+            "progress_msg_id"
+        )
+
+        saving_msg_id = data.get(
+            "saving_msg_id"
+        )
+
+        # =================================================
+        # DELETE OLD PROGRESS
+        # =================================================
+
+        for message_id in (
+            progress_id,
+            saving_msg_id,
+        ):
+
+            if not message_id:
+                continue
+
+            try:
+
+                await message.bot.delete_message(
+
+                    chat_id=message.chat.id,
+
+                    message_id=message_id,
+                )
+
+            except Exception:
+                pass
+
+        # =================================================
+        # CLEAR STATE
+        # =================================================
+
         await state.clear()
-        return await m.answer("Fitur upload hanya untuk admin/owner." if (await _lang(m.from_user.id)) == "id" else "Upload is available to admins/owner only.")
-    if price<0:return await m.answer(_t(await _lang(m.from_user.id), 'price_invalid'))
-    if price and not (PAID_CODE_MIN_IDR<=price<=PAID_CODE_MAX_IDR):
-        return await m.answer(_t(await _lang(m.from_user.id), 'price_range', min=f'{PAID_CODE_MIN_IDR:,}'.replace(',', '.'), max=f'{PAID_CODE_MAX_IDR:,}'.replace(',', '.')))
-    await state.update_data(price=price)
-    await state.set_state(U.server)
-    p=await get_pool()
-    server_rows=await p.fetch("SELECT server_no,name FROM server_categories WHERE enabled=TRUE ORDER BY server_no")
-    if not server_rows:
-        server_rows=[{'server_no':i,'name':f'Server {i}'} for i in range(1,11)]
-    buttons=[[InlineKeyboardButton(text=f"🗂 {r['server_no']} — {r['name']}",callback_data=f"up_server:{r['server_no']}")] for r in server_rows]
-    await m.answer("🗂 <b>PILIH SERVER</b>\n\nPilih kategori server:",parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-@router.callback_query(F.data.startswith("up_server:"))
-async def server_callback(c,state):
-    if not await admin_access(c.from_user.id):
-        return await c.answer("Khusus admin/owner.",show_alert=True)
-    try: n=int(c.data.split(":",1)[1])
-    except: return await c.answer("Server tidak valid.",show_alert=True)
-    p=await get_pool()
-    row=await p.fetchrow("SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE",n)
-    name=str(row["name"]) if row else f"Server {n}"
-    await state.update_data(server_name=f"Server {n} — {name}")
-    await state.set_state(U.access)
-    await c.answer()
-    await c.message.edit_text(f"🗂 Server dipilih: <b>{html.escape(name)}</b>\\n\\n🔐 <b>AKSES CODE</b>\\nKirim <code>all</code>, <code>free</code>, atau <code>vip</code>.",parse_mode="HTML")
+        # =================================================
+        # MEDIA SUMMARY
+        # =================================================
 
-@router.message(U.server)
-async def server(m,state):
-    value=(m.text or '').strip()
-    if not value.isdigit() or not 1 <= int(value) <= 10:
-        return await m.answer('Pilih server 1 sampai 10, atau gunakan tombol server.')
-    n=int(value); p=await get_pool()
-    row=await p.fetchrow("SELECT name FROM server_categories WHERE server_no=$1 AND enabled=TRUE",n)
-    name=str(row["name"]) if row else f"Server {n}"
-    await state.update_data(server_name=f"Server {n} — {name}")
-    await state.set_state(U.access)
-    await m.answer(f'🗂 Server dipilih: <b>{html.escape(name)}</b>\\n🔐 <b>AKSES CODE</b>\\nKirim <code>all</code>, <code>free</code>, atau <code>vip</code>.',parse_mode='HTML')
+        video_count = sum(
+            1
+            for item in media
+            if item.get("type") == "video"
+        )
 
-@router.message(U.access)
-async def access(m,state):
-    value=(m.text or '').strip().lower()
-    if value not in {'all','free','vip'}:
-        return await m.answer('Pilihan tidak valid. Kirim all, free, atau vip.')
-    d=await state.get_data()
-    if value=='free': await state.update_data(access_mode=value,price=0)
-    else: await state.update_data(access_mode=value)
-    await state.set_state(U.auto_delete)
-    await m.answer('🗑 <b>AUTO-DELETE</b>\nKirim <code>ya</code> atau <code>tidak</code>.',parse_mode='HTML')
+        photo_count = sum(
+            1
+            for item in media
+            if item.get("type") == "photo"
+        )
 
-@router.message(U.auto_delete)
-async def auto_delete(m,state):
-    value=(m.text or '').strip().lower()
-    if value not in {'ya','tidak','yes','no','on','off'}:
-        return await m.answer('Kirim ya/tidak (yes/no).')
-    await state.update_data(auto_delete=value in {'ya','yes','on'})
-    await state.set_state(U.forward)
-    await m.answer('↗️ <b>IZINKAN FORWARD MEDIA?</b>\nKirim <code>ya</code> atau <code>tidak</code>.',parse_mode='HTML')
+        document_count = sum(
+            1
+            for item in media
+            if item.get("type") == "document"
+        )
 
-@router.message(U.forward)
-async def forward(m,state):
-    value=(m.text or '').strip().lower()
-    if value not in {'ya','tidak','yes','no','on','off'}:
-        return await m.answer('Kirim ya/tidak (yes/no).')
-    await state.update_data(allow_forward=value in {'ya','yes','on'})
-    await state.set_state(U.watermark)
-    default_wm = str(await (await get_pool()).fetchval("SELECT value FROM settings WHERE key='default_watermark_enabled'") or 'on').lower()
-    await m.answer(f'💧 <b>AKTIFKAN WATERMARK CAPTION?</b>\nDefault admin: <b>{"ON" if default_wm == "on" else "OFF"}</b>.\nKirim <code>ya</code>, <code>tidak</code>, atau <code>default</code>.',parse_mode='HTML')
+        info = []
 
-@router.message(U.watermark)
-async def watermark(m,state):
-    value=(m.text or '').strip().lower()
-    if value not in {'ya','tidak','yes','no','on','off','default'}:
-        return await m.answer('Kirim ya/tidak/default (yes/no/default).')
-    if value == 'default':
-        value = str(await (await get_pool()).fetchval("SELECT value FROM settings WHERE key='default_watermark_enabled'") or 'on').lower()
-    await state.update_data(watermark_enabled=value in {'ya','yes','on'}, preview_media=[])
-    await state.set_state(U.preview)
-    await m.answer(
-        '🖼 <b>PREVIEW UNTUK PENGGUNA</b>\\n\\n'
-        'Kirim <b>1 video</b> atau maksimal <b>5 gambar</b> sebagai preview gratis. '
-        'Jangan campur video dan gambar. Jika tidak ingin preview, kirim <code>-</code>. '
-        'Setelah selesai tekan tombol Selesai Preview.',
-        parse_mode='HTML',
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='✅ Selesai Preview', callback_data='up_preview_done')],
-            [InlineKeyboardButton(text='⏭ Lewati Preview', callback_data='up_preview_skip')],
-            [InlineKeyboardButton(text='❌ Batal', callback_data='up_cancel')]
-        ]))
+        if video_count:
 
+            info.append(
+                f"{video_count} Video"
+            )
 
-@router.message(U.preview)
-async def receive_preview(m,state):
-    if not await admin_access(m.from_user.id):
-        await state.clear()
-        return await m.answer("Fitur upload hanya untuk admin/owner.")
-    d=await state.get_data()
-    items=list(d.get('preview_media',[]))
-    if (m.text or '').strip() == '-':
-        await state.update_data(preview_media=[])
-        d=await state.get_data()
-        return await create_code(m,state,int(d.get('price') or 0))
-    if m.video:
-        if items:
-            return await m.answer("Preview hanya boleh 1 video ATAU maksimal 5 gambar. Hapus pilihan sebelumnya dengan /cancelupload lalu mulai lagi, atau selesaikan preview.")
-        v=m.video
-        items=[{'type':'video','telegram_file_id':v.file_id,'telegram_file_unique_id':v.file_unique_id,'file_name':v.file_name or 'preview.mp4','mime_type':v.mime_type or 'video/mp4','file_size':v.file_size or 0,'storage_status':'telegram_file_id_only'}]
-    elif m.photo:
-        if any(x.get('type')=='video' for x in items):
-            return await m.answer("Preview sudah berisi video. Jangan campur video dan gambar.")
-        if len(items)>=5:
-            return await m.answer("Maksimal 5 gambar preview.")
-        ph=m.photo[-1]
-        items.append({'type':'photo','telegram_file_id':ph.file_id,'telegram_file_unique_id':ph.file_unique_id,'file_name':f'{ph.file_unique_id}.jpg','mime_type':'image/jpeg','file_size':ph.file_size or 0,'storage_status':'telegram_file_id_only'})
-    else:
-        return await m.answer("Kirim 1 video atau maksimal 5 gambar. Untuk melewati preview, kirim `-`.",parse_mode='Markdown')
-    await state.update_data(preview_media=items)
-    await m.answer(f"✅ Preview diterima: {len(items)} item. Kirim lagi jika ingin menambah gambar, atau tekan Selesai Preview.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='✅ Selesai Preview',callback_data='up_preview_done')],
-            [InlineKeyboardButton(text='❌ Batal',callback_data='up_cancel')]
-        ]))
+        if photo_count:
 
-@router.callback_query(F.data.in_({'up_preview_done','up_preview_skip'}))
-async def preview_done(c,state):
-    if not await admin_access(c.from_user.id):
-        return await c.answer("Khusus admin/owner.",show_alert=True)
-    d=await state.get_data()
-    if c.data=='up_preview_skip':
-        await state.update_data(preview_media=[])
-    await c.answer()
-    await show_config_panel(c.message, state)
+            info.append(
+                f"{photo_count} Photo"
+            )
 
+        if document_count:
 
-@router.callback_query(F.data=='up_cancel')
-async def cancel(c,state):
-    await loading(c); await state.clear(); await c.message.edit_text(_t(await _lang(c.from_user.id), 'cancelled'))
+            info.append(
+                f"{document_count} Document"
+            )
+
+        files_info = (
+            " • ".join(info)
+            if info
+            else "0 File"
+        )
+
+        # =================================================
+        # STATUS
+        # =================================================
+
+        if is_paid:
+
+            mode = (
+                f"💰 PAID "
+                f"{rupiah(price)}"
+            )
+
+        else:
+
+            mode = "🆓 FREE"
+
+        # =================================================
+        # ESCAPE OUTPUT
+        # =================================================
+
+        safe_title = escape(
+            title
+        )
+
+        safe_code = escape(
+            code
+        )
+
+        # =================================================
+        # SUCCESS
+        # =================================================
+
+        lang = await get_user_language(user_id)
+        review_line_id = f"\n👀 <b>Code Review</b>: <code>{escape(review_code)}</code>" if review_code else ""
+        review_line_en = f"\n👀 <b>Review Code</b>: <code>{escape(review_code)}</code>" if review_code else ""
+        review_line_zh = f"\n👀 <b>Review Code</b>：<code>{escape(review_code)}</code>" if review_code else ""
+        success_text = {
+            "id": (f"✅ <b>FILE BERHASIL DISIMPAN</b>\n\n📝 <b>Judul</b>: {safe_title}\n📦 <b>Total Media</b>: {media_count}\n📁 <b>Isi</b>: {escape(files_info)}\n💎 <b>Status</b>: {mode}{review_line_id}\n📦 <b>Code Media</b>: <code>{safe_code}</code>"),
+            "en": (f"✅ <b>FILE SAVED SUCCESSFULLY</b>\n\n📝 <b>Title</b>: {safe_title}\n📦 <b>Total Media</b>: {media_count}\n📁 <b>Content</b>: {escape(files_info)}\n💎 <b>Status</b>: {mode}{review_line_en}\n📦 <b>Media Code</b>: <code>{safe_code}</code>"),
+            "zh": (f"✅ <b>文件保存成功</b>\n\n📝 <b>标题</b>：{safe_title}\n📦 <b>媒体数量</b>：{media_count}\n📁 <b>内容</b>：{escape(files_info)}\n💎 <b>状态</b>：{mode}{review_line_zh}\n📦 <b>媒体代码</b>：<code>{safe_code}</code>"),
+        }
+        await message.answer(success_text.get(lang, success_text["id"]), parse_mode="HTML")
+
+        # =================================================
+        # PAID REVIEW CHANNEL
+        # =================================================
+
+        if is_paid and review_photos:
+
+            try:
+
+                await send_paid_review(
+
+                    message.bot,
+
+                    user_id=user_id,
+
+                    username=username,
+
+                    title=title,
+
+                    code=code,
+
+                    review_code=review_code,
+
+                    price=price,
+
+                    media_count=media_count,
+
+                    review_photos=review_photos,
+                )
+
+            except Exception:
+
+                # File database tetap aman.
+                logger.exception(
+                    "PAID REVIEW FAILED AFTER FILE SAVE | code=%s",
+                    code,
+                )
+
+        # =================================================
+        # UPDATE CHANNEL
+        # =================================================
+        # FREE uploader: never auto-post the code/upload to any channel.
+        # Paid/non-free uploads keep the existing channel log behaviour.
+        if not free_uploader:
+            await send_upload_log(
+                message.bot,
+                user_id=user_id,
+                title=title,
+                code=code,
+                review_code=review_code,
+                media_count=media_count,
+                is_paid=is_paid,
+                price=price,
+            )
+
+        # =================================================
+        # FREE SHARE REWARD NOTICE
+        # =================================================
+        # Sharing itself gives ZERO points. The owner gets +1 point only
+        # after a unique other user actually opens the shared code.
+        if free_uploader:
+            try:
+                me = await message.bot.get_me()
+                share_link = share_url(
+                    me.username or "",
+                    code,
+                    user_id,
+                    title,
+                )
+                share_text = {
+                    "id": (
+                        "🔗 <b>SHARE CODE & DAPATKAN POIN</b>\n\n"
+                        f"🔑 Code: <code>{safe_code}</code>\n"
+                        "Bagikan link ini. Setiap <b>1 pengguna unik</b> "
+                        "yang benar-benar membuka code memberi kamu <b>+1 poin</b>.\n\n"
+                        "⚠️ Membagikan link saja tidak memberikan poin."
+                    ),
+                    "en": (
+                        "🔗 <b>SHARE CODE & EARN POINTS</b>\n\n"
+                        f"🔑 Code: <code>{safe_code}</code>\n"
+                        "Share this link. Every <b>unique user</b> who actually opens "
+                        "the code gives you <b>+1 point</b>.\n\n"
+                        "⚠️ Sharing the link alone does not give points."
+                    ),
+                    "zh": (
+                        "🔗 <b>分享代码并赚取积分</b>\n\n"
+                        f"🔑 代码：<code>{safe_code}</code>\n"
+                        "每一位<b>真正打开代码的独立用户</b>可为你增加 <b>+1 积分</b>。\n\n"
+                        "⚠️ 仅分享链接不会获得积分。"
+                    ),
+                }[lang]
+                share_button = {
+                    "id": "🔗 Bagikan Code",
+                    "en": "🔗 Share Code",
+                    "zh": "🔗 分享代码",
+                }[lang]
+                await message.answer(
+                    share_text,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[
+                            InlineKeyboardButton(
+                                text=share_button,
+                                url=share_link,
+                            )
+                        ]]
+                    ),
+                )
+            except Exception:
+                logger.exception("FREE SHARE NOTICE ERROR | code=%s", code)
+
+    # =====================================================
+    # FINAL ERROR
+    # =====================================================
+
+    except Exception:
+
+        logger.exception(
+            "FINAL SAVE ERROR | user=%s",
+            user_id,
+        )
+
+        try:
+
+            await state.update_data(
+                saving=False
+            )
+
+        except Exception:
+            pass
+
+        try:
+
+            await message.answer(
+
+                "❌ <b>GAGAL MENYIMPAN FILE</b>\n\n"
+                "Terjadi kesalahan saat "
+                "menyimpan file ke database.\n\n"
+                "Silakan coba lagi.",
+
+                parse_mode="HTML",
+            )
+
+        except Exception:
+
+            logger.exception(
+                "ERROR MESSAGE FAILED | user=%s",
+                user_id,
+            )
